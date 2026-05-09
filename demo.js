@@ -278,10 +278,12 @@ async function fetchDemoPhoto(room) {
       if (res.ok) {
         const blob = await res.blob();
         if (blob.size > 1000 && blob.type.startsWith('image/')) {
-          const bmp = await createImageBitmap(blob);
-          const result = { blob, width: bmp.width, height: bmp.height };
-          bmp.close();
-          return result;
+          const bmp = await createImageBitmap(blob).catch(() => null);
+          if (bmp) {
+            const result = { blob, width: bmp.width, height: bmp.height };
+            bmp.close();
+            return result;
+          }
         }
       }
     } catch {}
@@ -322,7 +324,15 @@ async function fetchDemoPhoto(room) {
     ctx.textAlign = 'center';
     ctx.fillText(cab.name, cx + cw / 2, cy + ch / 2 + 6);
   }
-  const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+  let blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+  if (!blob || blob.size < 100) {
+    // 最终兜底：生成一个最小有效 JPEG
+    blob = await new Promise(r => {
+      const c = document.createElement('canvas'); c.width = 2; c.height = 2;
+      const x = c.getContext('2d'); x.fillStyle = room.color[0]; x.fillRect(0, 0, 2, 2);
+      c.toBlob(r, 'image/jpeg', 0.5);
+    });
+  }
   return { blob, width: w, height: h };
 }
 
@@ -342,6 +352,10 @@ async function loadDemoData() {
 
     // 获取照片（优先 Unsplash 真实图片）
     const { blob: photoBlob, width, height } = await fetchDemoPhoto(room);
+    if (!photoBlob || !(photoBlob instanceof Blob) || photoBlob.size < 8) {
+      console.warn(`跳过房间 ${room.name}：照片生成失败`);
+      continue;
+    }
     const photoId = `demo-photo-${room.id}`;
     await db.add('photos', {
       id: photoId, roomId: room.id, blob: photoBlob,

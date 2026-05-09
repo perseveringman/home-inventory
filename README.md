@@ -90,28 +90,54 @@ AI 的应答思路已在 `ai-prompt.md` 里写好：
 
 ## 接入真实 AI 识别
 
-柜子自动识别当前是启发式占位。改 `app.js` 里的 `detectCabinets()` 即可接入：
+柜子/物品识别已支持下列 Vision 模型（在「设置」→「配置 API」里填 Key 即可）：
 
-```js
-async function detectCabinets(blob, { width, height }) {
-  // 返回：[{ name, rect: { x, y, w, h } }]，坐标 0~1 归一化
-}
+- **OpenRouter（Gemini 2.5 Flash 等）** — 推荐，便宜快
+- **Claude Vision（Sonnet 4）** — 备选
+- **DeepSeek** — 用于 AI 对话（收纳建议 / 重命名）
+
+API Key 仅保存在你本地浏览器的 IndexedDB，从不经过任何服务器。识别请求由前端直接发往各厂商官方接口。
+
+## 部署到 Vercel
+
+项目是纯静态站点，无构建步骤，可直接部署到 Vercel。
+
+### 方式 1：GitHub 集成（推荐，自动部署）
+
+1. Fork 或 Push 本仓库到你自己的 GitHub
+2. 打开 [vercel.com/new](https://vercel.com/new) → Import 选中这个仓库
+3. Framework Preset 选 **Other**（或留空自动识别），Build Command 留空，Output Directory 留空
+4. 点 **Deploy**。首次部署完成后，之后每次 `git push` 都会自动触发新部署
+
+项目根目录的 `vercel.json` 已经配好了缓存策略（HTML/JS 禁用长缓存确保用户能看到最新版）。
+
+### 方式 2：Vercel CLI 直推
+
+```bash
+npm i -g vercel
+vercel login       # 首次需要登录
+vercel             # 预览部署
+vercel --prod      # 正式部署
 ```
 
-可接入：GPT-4V、Claude Vision、腾讯云 OCR、本地 ONNX（YOLO 等）。
+### 注意
+
+- 部署后访问站点的任何人需要**自己在"设置"页填入自己的 API Key**才能使用 AI 功能
+- 所有数据（房间/物品/Key）都存在访客自己的浏览器 IndexedDB，不会被他人看到
+- 要导出/备份数据，用「设置」→「绑定文件夹」或「导出 ZIP」
 
 ## 文件清单
 
 | 文件 | 职责 |
 |---|---|
-| `index.html` | HTML 骨架 + Tailwind CDN + 底部 tab |
-| `app.js` | 页面渲染 / 路由 / 拍照 / 柜子标注 / 物品管理 |
+| `index.html` | HTML 骨架 + Tailwind CDN + 底部 tab + 全局悬浮按钮 |
+| `app.js` | 页面渲染 / 路由 / 拍照 / 柜子标注 / 物品管理 / AI 识别 / AI 对话 |
 | `storage.js` | 文件夹序列化 / FS Access API / ZIP 导入导出 |
+| `vercel.json` | Vercel 静态部署配置 |
 | `README.md` | 本说明 |
 
 ## 下一步可扩展
 
-- [ ] 接入真实视觉模型做柜子识别
 - [ ] 柜子内细分抽屉层级（`cabinets/<slug>/drawer-1.md`）
 - [ ] Web Worker 做 ZIP 压缩避免大数据卡 UI
 - [ ] Git 集成（自动 `git commit` 每次变更）

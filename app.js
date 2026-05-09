@@ -88,7 +88,132 @@ async function setConfig(key, value) {
 /* ---------- Claude Vision 柜子识别 ---------- */
 const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
 
+/* 柜子识别统一提示词
+ * 关键策略：
+ *   1. 强调"独立可存放单元"——每扇柜门、每个开放格、每个收纳盒都是独立单元
+ *   2. 明确不要把多个相邻柜门合并成一个大框
+ *   3. 同类多个时统一按从左到右、从上到下编号
+ *   4. 桌面上的小型收纳盒/抽屉柜也要识别
+ *   5. 边界框要紧贴物体边缘，避免过大或过小
+ */
+const CABINET_DETECT_PROMPT = `你是家居收纳整理助手。请仔细分析这张房间照片，同时完成两件事：
+A) 识别所有可用于存放物品的"独立储物单元"（柜子/开放格/桌面等）及其边界框
+B) 识别照片中肉眼可见的、值得记录的"单个物品"（杂物/工具/日用品等）及其边界框
+
+====== 【A. 识别储物单元】 ======
+1. 每一个【独立可存取的储物空间】都要单独识别，不要合并：
+   - 多扇并排的柜门 → 每扇柜门算一个独立单元（即使它们外观一样、紧挨在一起）
+   - 多个并排的开放格/方格 → 每个格子算一个独立单元
+   - 桌面上的收纳盒、收纳筐、抽屉柜 → 每个都是独立单元
+   - 抽屉柜的多个抽屉 → 如果能清楚看到抽屉边界，分开识别
+2. 范围要包括：
+   - 大型家具：衣柜、书柜、橱柜、壁柜、吊柜、地柜、电视柜、储物柜
+   - 开放式：开放格、置物架、书架的每一层
+   - 桌面/小型：桌面收纳盒、桌面抽屉柜、收纳筐、文件盒、首饰盒
+   - 透明/半透明储物盒也要识别
+   - **桌面/工作台面**：书桌、办公桌、餐桌、床头柜的台面区域算一个独立的"放置单元"，即使台面上只是平放物品（笔、水杯、键盘）也要识别。命名为"XX 桌面"或"XX 台面"。**只框桌面平面区域，不要框桌腿、不要包含桌面下方的椅子或抽屉柜**。
+3. 不要识别为储物单元：墙面、地面、天花板、门、窗、显示器/屏幕本身、电脑/笔记本本身、装饰品本身、人和宠物
+
+【储物单元命名规则】
+- 同类型有多个时，按从左到右、从上到下顺序编号
+- 例如："白色吊柜1"、"白色吊柜2"、"开放格1"、"桌面收纳盒1"、"办公桌桌面"
+- 名称要包含颜色或材质等可区分特征（白色/黑色/木色/透明等）
+
+====== 【B. 识别单个物品】 ======
+1. 识别照片中**独立可拾取**的、**有具体身份**的物品，例如：
+   - 电子产品：键盘、鼠标、耳机、手机、相机、充电器、路由器
+   - 日用品：杯子、水瓶、书、笔记本、笔、眼镜、钥匙、钱包
+   - 工具/文具：剪刀、胶带、卷尺、螺丝刀、订书机
+   - 玩具/摆件：毛绒玩具、手办、相框、小盆栽
+   - 衣物配饰：帽子、包、围巾（如果能清晰看到独立的一件）
+2. **不要识别为物品**：
+   - 装在透明/半透明盒里的一堆小物（无法逐个清点）
+   - 墙上的画、海报、日历、开关、插座
+   - 显示器上正在显示的内容
+   - 家具本身（椅子、桌子、柜子——这些归入 A）
+   - 非常模糊、只露一角看不清的物体
+3. 每件物品给一个**具体的中文名**（能想到品牌/用途就写上，如"苹果鼠标"而非"鼠标"；不确定则用通用名），并配一个适合的 emoji。
+4. 一张图**物品总数上限 30 件**；如果看到更多，只挑选最显眼、最有保留价值的 30 件。
+5. 如果照片里确实没有值得记录的物品（只有家具），items 返回 []。
+
+====== 【边界框要求】（对 A 和 B 都适用） ======
+- 使用归一化坐标 [x, y, w, h]，范围 0~1，原点在左上角
+- x, y 是左上角坐标；w, h 是宽高
+- 边界要【紧贴物体边缘】，不要过大留白，也不要切到物体
+- 确保 x+w ≤ 1 且 y+h ≤ 1
+
+====== 【输出格式】 ======
+只输出一个 JSON 对象（不要任何解释、Markdown 代码块或其他文字）：
+{"cabinets":[{"name":"白色吊柜1","rect":{"x":0.05,"y":0.10,"w":0.20,"h":0.35}}],"items":[{"name":"苹果无线键盘","emoji":"⌨️","rect":{"x":0.42,"y":0.61,"w":0.15,"h":0.05}}]}
+
+如果某类没有内容，对应字段给空数组 []。请尽可能识别完整，宁可多不可少。`;
+
+/* 解析 AI 返回，兼容三种格式：
+ *   1. 新格式对象 { cabinets:[], items:[] }
+ *   2. 旧格式数组（纯柜子，向后兼容）
+ * 返回统一结构 { cabinets: [...], items: [...] }
+ */
+function parseDetection(text) {
+  // 剥离 ```json ... ``` 代码块
+  const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+
+  // 尝试提取 JSON 对象（优先）或数组
+  let payload;
+  const objMatch = cleaned.match(/\{[\s\S]*\}/);
+  const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+  if (objMatch) {
+    try { payload = JSON.parse(objMatch[0]); }
+    catch (e) { /* 继续尝试数组 */ }
+  }
+  if (!payload && arrMatch) {
+    try { payload = JSON.parse(arrMatch[0]); }
+    catch (e) { throw new Error('JSON 解析失败：' + e.message); }
+  }
+  if (!payload) throw new Error('AI 返回格式异常：' + text.slice(0, 120));
+
+  // 规整为 { cabinets, items }
+  let rawCabinets, rawItems;
+  if (Array.isArray(payload)) {
+    rawCabinets = payload;
+    rawItems = [];
+  } else {
+    rawCabinets = Array.isArray(payload.cabinets) ? payload.cabinets : [];
+    rawItems    = Array.isArray(payload.items)    ? payload.items    : [];
+  }
+
+  const clampRect = (r) => {
+    let x = +r.x || 0, y = +r.y || 0, w = +r.w || 0.1, h = +r.h || 0.1;
+    x = Math.max(0, Math.min(1, x));
+    y = Math.max(0, Math.min(1, y));
+    w = Math.max(0.02, Math.min(1, w));
+    h = Math.max(0.02, Math.min(1, h));
+    if (x + w > 1) w = 1 - x;
+    if (y + h > 1) h = 1 - y;
+    return { x, y, w, h };
+  };
+
+  const cabinets = rawCabinets.map((b, i) => ({
+    name: (b.name || `柜子${i + 1}`).toString().slice(0, 30),
+    rect: clampRect(b.rect || {}),
+  })).filter(b => b.rect.w > 0.02 && b.rect.h > 0.02);
+
+  const items = rawItems.map((b, i) => ({
+    name: (b.name || `物品${i + 1}`).toString().slice(0, 30),
+    emoji: (b.emoji || '').toString().slice(0, 4),
+    rect: clampRect(b.rect || {}),
+  })).filter(b => b.rect.w > 0.01 && b.rect.h > 0.01);
+
+  return { cabinets, items };
+}
+
+/* 向后兼容别名：老代码里若还在调 parseCabinetBoxes，返回扁平数组 */
+function parseCabinetBoxes(text) {
+  return parseDetection(text).cabinets;
+}
+
+
 async function fileToBase64(blob) {
+  if (!blob || !(blob instanceof Blob)) throw new Error('无效的图片数据');
   const buf = await blob.arrayBuffer();
   const bytes = new Uint8Array(buf);
   let binary = '';
@@ -102,15 +227,17 @@ async function detectCabinetsWithClaude(blob, { width, height }) {
 
   const maxSide = 1568;
   let imgBlob = blob;
-  if (Math.max(width, height) > maxSide) {
+  if (blob && blob.size > 100 && Math.max(width, height) > maxSide) {
     const ratio = maxSide / Math.max(width, height);
     const nw = Math.round(width * ratio), nh = Math.round(height * ratio);
-    const bmp = await createImageBitmap(blob);
-    const c = document.createElement('canvas');
-    c.width = nw; c.height = nh;
-    c.getContext('2d').drawImage(bmp, 0, 0, nw, nh);
-    imgBlob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
-    bmp.close();
+    const bmp = await createImageBitmap(blob).catch(() => null);
+    if (bmp) {
+      const c = document.createElement('canvas');
+      c.width = nw; c.height = nh;
+      c.getContext('2d').drawImage(bmp, 0, 0, nw, nh);
+      imgBlob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+      bmp.close();
+    }
   }
 
   const base64 = await fileToBase64(imgBlob);
@@ -126,16 +253,12 @@ async function detectCabinetsWithClaude(blob, { width, height }) {
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 1024,
+      max_tokens: 8192,
       messages: [{
         role: 'user',
         content: [
           { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
-          { type: 'text', text: `在这张房间照片中，识别出所有柜子、架子、储物家具的位置。
-对每个识别出的柜子，返回它的归一化边界框坐标 [x, y, w, h]（0~1浮点数，原点在左上角）。
-只返回 JSON 数组，不要其他文字，格式如下：
-[{"name": "柜子名称", "rect": {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}}]
-如果识别不到任何柜子，返回空数组 []。` }
+          { type: 'text', text: CABINET_DETECT_PROMPT }
         ]
       }]
     })
@@ -148,18 +271,7 @@ async function detectCabinetsWithClaude(blob, { width, height }) {
 
   const data = await res.json();
   const text = data.content?.[0]?.text || '[]';
-  const match = text.match(/\[[\s\S]*\]/);
-  if (!match) throw new Error('AI 返回格式异常');
-
-  return JSON.parse(match[0]).map(b => ({
-    name: b.name || '柜子',
-    rect: {
-      x: Math.max(0, Math.min(0.95, +b.rect.x || 0)),
-      y: Math.max(0, Math.min(0.95, +b.rect.y || 0)),
-      w: Math.max(0.03, Math.min(1, +b.rect.w || 0.1)),
-      h: Math.max(0.03, Math.min(1, +b.rect.h || 0.1)),
-    }
-  }));
+  return parseDetection(text);
 }
 
 /* ---------- 工具 ---------- */
@@ -176,8 +288,10 @@ function toast(msg, ms = 1800) {
 
 /* Blob → Object URL 缓存，避免同一张图反复 createObjectURL */
 const urlCache = new Map();
+const PLACEHOLDER_SVG = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120"><rect fill="#e2e8f0" width="120" height="120" rx="16"/><text x="60" y="65" text-anchor="middle" font-size="36">📦</text></svg>');
 function blobURL(blob, key) {
   if (urlCache.has(key)) return urlCache.get(key);
+  if (!blob || !(blob instanceof Blob) || blob.size < 8) return PLACEHOLDER_SVG;
   const u = URL.createObjectURL(blob);
   urlCache.set(key, u);
   return u;
@@ -185,7 +299,15 @@ function blobURL(blob, key) {
 
 /* 将图片压缩到合适尺寸再存，避免 IndexedDB 里堆几十 MB */
 async function compressImage(file, maxSide = 1600, quality = 0.82) {
-  const bitmap = await createImageBitmap(file);
+  const bitmap = await createImageBitmap(file).catch(() => null);
+  if (!bitmap) {
+    // 无法解码时返回空占位
+    const blob = await new Promise(r => {
+      const c = document.createElement('canvas'); c.width = 1; c.height = 1;
+      c.toBlob(r, 'image/png');
+    });
+    return { blob, width: 1, height: 1 };
+  }
   let { width, height } = bitmap;
   const scale = Math.min(1, maxSide / Math.max(width, height));
   width = Math.round(width * scale); height = Math.round(height * scale);
@@ -254,16 +376,86 @@ function placeholderBlob() {
   return new Promise(r => canvas.toBlob(r, 'image/png'));
 }
 
+/* 从原图根据归一化 rect 裁剪物品缩略图，输出 Blob；失败/太小返回 null */
+async function cropItemFromPhoto(photoBlob, rect, maxSize = 280) {
+  try {
+    const bmp = await createImageBitmap(photoBlob);
+    const sx = Math.max(0, rect.x * bmp.width);
+    const sy = Math.max(0, rect.y * bmp.height);
+    const sw = Math.min(bmp.width - sx, rect.w * bmp.width);
+    const sh = Math.min(bmp.height - sy, rect.h * bmp.height);
+    if (sw < 24 || sh < 24) { bmp.close(); return null; }
+    const scale = Math.min(1, maxSize / Math.max(sw, sh));
+    const dw = Math.max(1, Math.round(sw * scale));
+    const dh = Math.max(1, Math.round(sh * scale));
+    const c = document.createElement('canvas');
+    c.width = dw; c.height = dh;
+    c.getContext('2d').drawImage(bmp, sx, sy, sw, sh, 0, 0, dw, dh);
+    bmp.close();
+    return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.82));
+  } catch (e) {
+    console.warn('裁剪失败', e);
+    return null;
+  }
+}
+
+/* 确保某房间有一个 type='loose' 的"自由物品收纳处" cabinet，返回该 cabinet */
+async function ensureLooseCabinet(roomId) {
+  const list = await db.byIndex('cabinets', 'roomId', roomId);
+  let loose = list.find(c => c.type === 'loose');
+  if (loose) return loose;
+  loose = {
+    id: uid(),
+    photoId: null,
+    roomId,
+    name: '📥 自由物品收纳处',
+    rect: { x: 0, y: 0, w: 0, h: 0 },
+    type: 'loose',
+    createdAt: Date.now(),
+  };
+  await db.add('cabinets', loose);
+  return loose;
+}
+
+/* 确保存在全局"全屋自由区" cabinet（roomId 为特殊值 '__global__'），返回 cabinet */
+async function ensureGlobalLooseCabinet() {
+  const GID = '__global__';
+  const list = await db.all('cabinets');
+  let loose = list.find(c => c.type === 'loose-global');
+  if (loose) return loose;
+  loose = {
+    id: uid(),
+    photoId: null,
+    roomId: GID,
+    name: '📦 全屋自由区',
+    rect: { x: 0, y: 0, w: 0, h: 0 },
+    type: 'loose-global',
+    createdAt: Date.now(),
+  };
+  await db.add('cabinets', loose);
+  return loose;
+}
+
+/* 判断 cabinet 是否是"自由区"（房间级或全局级） */
+function isLooseCabinet(c) {
+  return c && (c.type === 'loose' || c.type === 'loose-global');
+}
+
 /* ---------- AI 识别接口 ----------
- * 有 Claude API Key 时调用 Claude Vision 真实识别；
- * 无 Key 时使用启发式占位。
+ * 优先 Gemini Vision (OpenRouter) → Claude Vision → 启发式占位
  */
 async function detectCabinets(blob, { width, height }) {
-  const apiKey = await getConfig('claude_api_key');
-  if (apiKey) {
+  // 1. 尝试 Gemini Vision（OpenRouter）
+  const orKey = await getConfig('openrouter_api_key');
+  if (orKey) {
+    return await detectCabinetsWithGemini(blob, { width, height });
+  }
+  // 2. 尝试 Claude Vision
+  const ckKey = await getConfig('claude_api_key');
+  if (ckKey) {
     return await detectCabinetsWithClaude(blob, { width, height });
   }
-  // 无 API Key 时的启发式占位
+  // 3. 启发式占位
   await new Promise(r => setTimeout(r, 600));
   const ratio = width / height;
   const boxes = [];
@@ -275,7 +467,7 @@ async function detectCabinets(blob, { width, height }) {
     boxes.push({ name: '柜子 1', rect: { x: 0.10, y: 0.20, w: 0.80, h: 0.35 } });
     boxes.push({ name: '柜子 2', rect: { x: 0.12, y: 0.58, w: 0.76, h: 0.35 } });
   }
-  return boxes;
+  return { cabinets: boxes, items: [] };
 }
 
 /* ---------- 路由 ---------- */
@@ -296,6 +488,114 @@ window.addEventListener('hashchange', () => {
   } catch {}
 });
 
+// 全局悬浮 AI 助手按钮 + 即时识别按钮
+function bindGlobalFabs() {
+  const chat = document.getElementById('__fab-chat');
+  if (chat && !chat.dataset.bound) {
+    chat.dataset.bound = '1';
+    chat.addEventListener('click', () => openChatPanel().catch(e => toast('打开失败：' + e.message)));
+  }
+  const scanInput = document.getElementById('__fab-scan-input');
+  if (scanInput && !scanInput.dataset.bound) {
+    scanInput.dataset.bound = '1';
+    scanInput.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = ''; // 清空以便再次选择同一文件
+      if (file) runQuickItemScan(file).catch(err => toast('识别失败：' + err.message));
+    });
+  }
+}
+document.addEventListener('DOMContentLoaded', bindGlobalFabs);
+if (document.readyState !== 'loading') bindGlobalFabs();
+
+/* 即时识别物品入口：拍照/上传 → 压缩 → AI 识别 → 裁剪 → 入 Inbox */
+async function runQuickItemScan(file) {
+  const scanBtn = document.getElementById('__fab-scan');
+  const iconEl = document.getElementById('__fab-scan-icon');
+  const textEl = document.getElementById('__fab-scan-text');
+  const setBusy = (busy, text) => {
+    if (!scanBtn) return;
+    scanBtn.style.pointerEvents = busy ? 'none' : '';
+    scanBtn.style.opacity = busy ? '0.85' : '';
+    if (iconEl) iconEl.innerHTML = busy ? '<span class="scan-spinner"></span>' : '📷';
+    if (textEl) textEl.textContent = text || '识别物品';
+  };
+
+  try {
+    setBusy(true, '压缩中…');
+    const { blob, width, height } = await compressImage(file);
+
+    // 决定归属：当前若在 room / photo 页，归到该房间自由区；否则全屋自由区
+    const route = state.route || {};
+    let targetRoomId = null;
+    if (route.name === 'room' && route.id) {
+      targetRoomId = route.id;
+    } else if (route.name === 'photo' && route.id) {
+      const photo = await db.get('photos', route.id);
+      if (photo) targetRoomId = photo.roomId;
+    }
+
+    let targetCab, scope;
+    if (targetRoomId) {
+      targetCab = await ensureLooseCabinet(targetRoomId);
+      const room = await db.get('rooms', targetRoomId);
+      scope = `${room?.icon || '🏠'} ${room?.name || '当前房间'}`;
+    } else {
+      targetCab = await ensureGlobalLooseCabinet();
+      scope = '📦 全屋自由区';
+    }
+
+    setBusy(true, 'AI 识别中…');
+    toast('AI 正在识别物品…');
+    const detected = await detectCabinets(blob, { width, height });
+    const itemList = detected.items || [];
+
+    if (itemList.length === 0) {
+      setBusy(false);
+      toast('没识别到可记录的物品');
+      return;
+    }
+
+    setBusy(true, `裁剪 ${itemList.length} 个…`);
+
+    // 保存原图作为 photo，方便之后溯源（可选）；但不暴露到照片列表。
+    // 简化：只存 item 的 image，不创建 photo 记录，避免污染房间照片列表。
+    for (const it of itemList) {
+      const crop = await cropItemFromPhoto(blob, it.rect);
+      const image = crop || await generateItemThumb(it.name, it.emoji || '📦');
+      await db.add('items', {
+        id: uid(),
+        cabinetId: targetCab.id,
+        roomId: targetCab.roomId, // 'loose-global' 时值是 '__global__'
+        name: it.name,
+        qty: 1,
+        note: '',
+        tags: [],
+        image,
+        status: 'pending',
+        source: 'ai',
+        sourcePhotoId: null,
+        aiEmoji: it.emoji || '',
+        aiRect: it.rect,
+        createdAt: Date.now(),
+      });
+    }
+
+    setBusy(false);
+    toast(`识别了 ${itemList.length} 件物品 · 已放入${scope}的待处理`);
+    refreshInboxBadge();
+
+    // 当前在 inbox / room / rooms 页的话，刷新
+    if (['inbox', 'room', 'rooms'].includes(route.name)) {
+      render();
+    }
+  } catch (e) {
+    setBusy(false);
+    throw e;
+  }
+}
+
+
 /* ---------- 渲染入口 ---------- */
 async function render() {
   const app = $('#app');
@@ -310,14 +610,33 @@ async function render() {
     b.classList.toggle('text-ink-500', !active);
   });
 
+  // 刷新 inbox 红点
+  refreshInboxBadge();
+
   const r = state.route;
   if (r.name === 'rooms')    return renderRooms(app);
   if (r.name === 'room')     return renderRoomDetail(app, r.id);
   if (r.name === 'photo')    return renderPhotoDetail(app, r.id);
   if (r.name === 'items')    return renderItems(app);
+  if (r.name === 'inbox')    return renderInbox(app);
   if (r.name === 'search')   return renderSearch(app);
   if (r.name === 'settings') return renderSettings(app);
   app.innerHTML = '<div class="p-8">未知页面</div>';
+}
+
+async function refreshInboxBadge() {
+  try {
+    const items = await db.all('items');
+    const pending = items.filter(i => i.status === 'pending').length;
+    const el = document.getElementById('inbox-badge');
+    if (!el) return;
+    if (pending > 0) {
+      el.textContent = pending > 99 ? '99+' : String(pending);
+      el.classList.remove('hidden');
+    } else {
+      el.classList.add('hidden');
+    }
+  } catch (_) { /* ignore */ }
 }
 
 /* ---------- 通用：顶部栏 ---------- */
@@ -370,9 +689,14 @@ async function renderRooms(app) {
 
   const countsByRoom = id => ({
     photos: photos.filter(p => p.roomId === id).length,
-    cabinets: cabinets.filter(c => c.roomId === id).length,
-    items: items.filter(i => i.roomId === id).length,
+    cabinets: cabinets.filter(c => c.roomId === id && (c.type === 'normal' || !c.type)).length,
+    items: items.filter(i => i.roomId === id && i.status !== 'pending').length,
   });
+
+  // 全屋自由区物品数
+  const globalLooseCab = cabinets.find(c => c.type === 'loose-global');
+  const globalLooseItems = globalLooseCab ? items.filter(i => i.cabinetId === globalLooseCab.id) : [];
+  const globalLoosePending = globalLooseItems.filter(i => i.status === 'pending').length;
 
   app.innerHTML = `
     ${header({
@@ -414,6 +738,17 @@ async function renderRooms(app) {
               </button>
             `;
           }).join('')}
+          <!-- 全屋自由区卡片 -->
+          <button id="__global-loose" class="text-left bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-dashed border-amber-300 rounded-2xl shadow-soft hover:shadow-lg transition overflow-hidden">
+            <div class="aspect-[4/3] flex flex-col items-center justify-center">
+              <div class="text-5xl mb-2">📦</div>
+              <div class="text-sm font-medium text-amber-700">全屋自由区</div>
+              ${globalLoosePending > 0 ? `<div class="mt-1 px-2 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-semibold">${globalLoosePending} 件待处理</div>` : ''}
+            </div>
+            <div class="p-3">
+              <div class="text-xs text-ink-500">暂时不知道放哪的物品 · ${globalLooseItems.length} 件</div>
+            </div>
+          </button>
         </div>
       `}
     </div>
@@ -422,6 +757,10 @@ async function renderRooms(app) {
   $('#__add')?.addEventListener('click', () => openRoomDialog());
   $('#__empty-add')?.addEventListener('click', () => openRoomDialog());
   $$('.room-card').forEach(b => b.onclick = () => go({ name: 'room', id: b.dataset.id }));
+  $('#__global-loose')?.addEventListener('click', async () => {
+    const cab = await ensureGlobalLooseCabinet();
+    openLooseListDialog(cab, null);
+  });
 }
 
 function openRoomDialog(existing) {
@@ -514,6 +853,11 @@ async function renderRoomDetail(app, roomId) {
   ]);
   photos.sort((a,b) => a.createdAt - b.createdAt);
 
+  // 房间级自由区 cabinet & 其物品
+  const looseCab = cabinets.find(c => c.type === 'loose');
+  const looseItems = looseCab ? items.filter(i => i.cabinetId === looseCab.id) : [];
+  const loosePending = looseItems.filter(i => i.status === 'pending');
+
   app.innerHTML = `
     ${header({
       title: `${room.icon || '🏠'} ${room.name}`,
@@ -564,11 +908,30 @@ async function renderRoomDetail(app, roomId) {
           </label>
         </div>
       `}
+
+      <!-- 自由物品收纳处 -->
+      <div class="bg-white rounded-2xl shadow-soft overflow-hidden mt-4">
+        <button id="__open-loose" class="w-full flex items-center gap-3 p-4 hover:bg-slate-50 text-left">
+          <div class="text-2xl">📥</div>
+          <div class="flex-1">
+            <div class="text-sm font-semibold text-ink-900 flex items-center gap-2">
+              自由物品收纳处
+              ${loosePending.length > 0 ? `<span class="min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] leading-[18px] text-center font-semibold">${loosePending.length}</span>` : ''}
+            </div>
+            <div class="text-xs text-ink-500 mt-0.5">暂时不知道放到哪里的物品 · 共 ${looseItems.length} 件${loosePending.length > 0 ? ` · ${loosePending.length} 件待处理` : ''}</div>
+          </div>
+          <div class="text-ink-300">→</div>
+        </button>
+      </div>
     </div>
   `;
 
   bindBack(() => go('rooms'));
   $('#__edit').onclick = () => openRoomDialog(room);
+  $('#__open-loose')?.addEventListener('click', async () => {
+    const cab = looseCab || await ensureLooseCabinet(roomId);
+    openLooseListDialog(cab, room);
+  });
   $$('.photo-card').forEach(b => b.onclick = () => go({ name: 'photo', id: b.dataset.id }));
 
   const addPhoto = async (input) => {
@@ -604,8 +967,11 @@ async function renderPhotoDetail(app, photoId) {
         <button id="__detect" class="hidden md:inline-flex items-center gap-1.5 h-9 px-3 rounded-full bg-white border border-slate-200 hover:border-brand-500 text-sm text-ink-700">
           <span>✨</span> AI 识别
         </button>
+        <button id="__edit-boxes" class="hidden md:inline-flex items-center gap-1.5 h-9 px-3 rounded-full bg-white border border-slate-200 hover:border-amber-500 text-sm text-ink-700 ml-2">
+          <span>✏️</span> 编辑边框
+        </button>
         <button id="__draw" class="inline-flex items-center gap-1.5 h-9 px-3 rounded-full bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium shadow-soft ml-2">
-          <span>✏️</span> <span class="hidden md:inline">手动框选</span><span class="md:hidden">框选</span>
+          <span>＋</span> <span class="hidden md:inline">手动框选</span><span class="md:hidden">框选</span>
         </button>
       `
     })}
@@ -614,7 +980,10 @@ async function renderPhotoDetail(app, photoId) {
       <!-- 移动端工具条 -->
       <div class="md:hidden flex gap-2 mb-3">
         <button id="__detect-m" class="flex-1 h-10 rounded-xl bg-white border border-slate-200 text-sm font-medium flex items-center justify-center gap-1">
-          ✨ AI 识别柜子
+          ✨ AI 识别
+        </button>
+        <button id="__edit-boxes-m" class="flex-1 h-10 rounded-xl bg-white border border-slate-200 text-sm font-medium flex items-center justify-center gap-1">
+          ✏️ 编辑边框
         </button>
         <button id="__del-photo" class="h-10 w-10 rounded-xl bg-white border border-slate-200 text-red-500" title="删除照片">
           <svg class="mx-auto" width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13a2 2 0 002 2h6a2 2 0 002-2l1-13M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -652,19 +1021,34 @@ async function renderPhotoDetail(app, photoId) {
   const boxesEl = $('#boxes');
   const listEl = $('#cabinet-list');
 
+  let editingBoxes = false;
+  let selectedCabId = null;
+
   function renderBoxes() {
-    boxesEl.innerHTML = cabinets.map((c, idx) => {
+    boxesEl.classList.toggle('edit-mode', editingBoxes);
+    boxesEl.innerHTML = cabinets.map((c) => {
       const r = c.rect;
+      const sel = (editingBoxes && c.id === selectedCabId);
+      const dim = (editingBoxes && selectedCabId && c.id !== selectedCabId);
+      const handles = sel
+        ? ['nw','n','ne','e','se','s','sw','w'].map(d => `<span class="handle ${d}" data-dir="${d}"></span>`).join('')
+        : '';
       return `
-        <div class="cabinet-box" data-id="${c.id}"
+        <div class="cabinet-box ${sel ? 'selected' : ''} ${dim ? 'dimmed' : ''}" data-id="${c.id}"
           style="left:${r.x*100}%;top:${r.y*100}%;width:${r.w*100}%;height:${r.h*100}%;">
           <span class="label">${esc(c.name)}</span>
+          ${handles}
         </div>
       `;
     }).join('');
-    boxesEl.querySelectorAll('.cabinet-box').forEach(b => {
-      b.onclick = (e) => { e.stopPropagation(); openCabinetDialog(cabinets.find(c => c.id === b.dataset.id)); };
-    });
+
+    if (!editingBoxes) {
+      // 普通模式：点击柜子打开详情
+      boxesEl.querySelectorAll('.cabinet-box').forEach(b => {
+        b.onclick = (e) => { e.stopPropagation(); openCabinetDialog(cabinets.find(c => c.id === b.dataset.id)); };
+      });
+    }
+    // 编辑模式下点击/拖拽由 setupBoxEditing 中的 pointer 事件统一处理
   }
 
   async function renderList() {
@@ -721,18 +1105,54 @@ async function renderPhotoDetail(app, photoId) {
   /* ----- AI 识别 ----- */
   const runDetect = async () => {
     const hint = $('#hint');
-    const hasKey = await getConfig('claude_api_key');
-    hint.textContent = hasKey ? '✨ Claude Vision 正在识别柜子…' : '✨ 正在识别柜子（启发式模式，设置页可配置 API Key）…';
+    const orKey = await getConfig('openrouter_api_key');
+    const ckKey = await getConfig('claude_api_key');
+    const mode = orKey ? 'Gemini Vision' : ckKey ? 'Claude Vision' : '启发式';
+    hint.textContent = `✨ ${mode} 正在识别柜子和物品…`;
     try {
       const detected = await detectCabinets(photo.blob, { width: photo.width, height: photo.height });
-      for (const d of detected) {
-        const cab = { id: uid(), photoId, roomId: photo.roomId, name: d.name, rect: d.rect, createdAt: Date.now() };
+      const cabList = detected.cabinets || [];
+      const itemList = detected.items || [];
+
+      // 1) 添加柜子
+      for (const d of cabList) {
+        const cab = { id: uid(), photoId, roomId: photo.roomId, name: d.name, rect: d.rect, type: 'normal', createdAt: Date.now() };
         await db.add('cabinets', cab);
         cabinets.push(cab);
       }
       renderBoxes(); renderList();
-      hint.textContent = `已识别 ${detected.length} 个候选柜子，点击任一柜子可重命名或调整。`;
-      toast('AI 识别完成');
+
+      // 2) 添加物品到房间的自由区（status: pending）
+      let addedItems = 0;
+      if (itemList.length > 0) {
+        hint.textContent = `✨ 裁剪 ${itemList.length} 个物品图像…`;
+        const looseCab = await ensureLooseCabinet(photo.roomId);
+        for (const it of itemList) {
+          const crop = await cropItemFromPhoto(photo.blob, it.rect);
+          const image = crop || await generateItemThumb(it.name, it.emoji || '📦');
+          await db.add('items', {
+            id: uid(),
+            cabinetId: looseCab.id,
+            roomId: photo.roomId,
+            name: it.name,
+            qty: 1,
+            note: '',
+            tags: [],
+            image,
+            status: 'pending',
+            source: 'ai',
+            sourcePhotoId: photoId,
+            aiEmoji: it.emoji || '',
+            aiRect: it.rect, // 保存 AI 原始 rect，方便之后"查看原图定位"
+            createdAt: Date.now(),
+          });
+          addedItems++;
+        }
+      }
+
+      hint.textContent = `已识别 ${cabList.length} 个柜子` + (addedItems > 0 ? ` · ${addedItems} 件物品已放入待处理` : '。点击任一柜子可重命名或调整。');
+      toast(`AI 识别完成：${cabList.length} 个柜子、${addedItems} 件物品`);
+      refreshInboxBadge();
     } catch (e) {
       hint.textContent = '识别失败：' + e.message;
     }
@@ -802,6 +1222,132 @@ async function renderPhotoDetail(app, photoId) {
   drawLayer.addEventListener('touchstart', onDown, { passive: false });
   drawLayer.addEventListener('touchmove',  onMove, { passive: false });
   drawLayer.addEventListener('touchend',   onUp);
+
+  /* ----- 编辑边框：拖拽缩放 + 平移 ----- */
+  const toggleEditMode = () => {
+    if (drawing) { $('#__draw').click(); } // 关闭框选模式
+    editingBoxes = !editingBoxes;
+    selectedCabId = null;
+    const btns = [$('#__edit-boxes'), $('#__edit-boxes-m')].filter(Boolean);
+    btns.forEach(b => {
+      b.classList.toggle('bg-amber-500', editingBoxes);
+      b.classList.toggle('text-white', editingBoxes);
+      b.classList.toggle('bg-white', !editingBoxes);
+      b.classList.toggle('text-ink-700', !editingBoxes);
+    });
+    $('#hint').textContent = editingBoxes
+      ? '✏️ 点选一个边框后，拖动四角/四边手柄缩放，拖框中心平移；再次点击空白处取消选择'
+      : '';
+    renderBoxes();
+  };
+  $('#__edit-boxes')?.addEventListener('click', toggleEditMode);
+  $('#__edit-boxes-m')?.addEventListener('click', toggleEditMode);
+
+  let editDrag = null; // { mode:'move'|'resize', dir, cabId, startPt:{x,y}, startRect:{x,y,w,h}, boxEl }
+
+  const onEditDown = (e) => {
+    if (!editingBoxes) return;
+    const box = e.target.closest('.cabinet-box');
+    const handle = e.target.closest('.handle');
+
+    if (!box) {
+      // 点击空白：取消选中
+      if (selectedCabId) { selectedCabId = null; renderBoxes(); }
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+
+    const cabId = box.dataset.id;
+
+    // 如果点的是未选中的框，先选中（不拖）
+    if (cabId !== selectedCabId) {
+      selectedCabId = cabId;
+      renderBoxes();
+      return;
+    }
+
+    // 已选中：开始拖拽
+    const cab = cabinets.find(c => c.id === cabId);
+    if (!cab) return;
+    const newBox = boxesEl.querySelector(`.cabinet-box[data-id="${cabId}"]`);
+    editDrag = {
+      mode: handle ? 'resize' : 'move',
+      dir: handle ? handle.dataset.dir : null,
+      cabId,
+      startPt: pt(e),
+      startRect: { ...cab.rect },
+      boxEl: newBox,
+    };
+    if (e.pointerId !== undefined) {
+      try { newBox.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+  };
+
+  const computeNewRect = (drag, p) => {
+    const dx = p.x - drag.startPt.x;
+    const dy = p.y - drag.startPt.y;
+    const s = drag.startRect;
+    const MIN = 0.02;
+    let { x, y, w, h } = s;
+
+    if (drag.mode === 'move') {
+      x = Math.max(0, Math.min(1 - s.w, s.x + dx));
+      y = Math.max(0, Math.min(1 - s.h, s.y + dy));
+    } else {
+      // resize：dir 决定边/角
+      const d = drag.dir;
+      // 计算两条对边
+      let x1 = s.x, y1 = s.y, x2 = s.x + s.w, y2 = s.y + s.h;
+      if (d.includes('w')) x1 = Math.max(0, Math.min(x2 - MIN, s.x + dx));
+      if (d.includes('e')) x2 = Math.min(1, Math.max(x1 + MIN, s.x + s.w + dx));
+      if (d.includes('n')) y1 = Math.max(0, Math.min(y2 - MIN, s.y + dy));
+      if (d.includes('s')) y2 = Math.min(1, Math.max(y1 + MIN, s.y + s.h + dy));
+      x = x1; y = y1; w = x2 - x1; h = y2 - y1;
+    }
+    return { x, y, w, h };
+  };
+
+  const onEditMove = (e) => {
+    if (!editDrag) return;
+    e.preventDefault();
+    const p = pt(e);
+    const r = computeNewRect(editDrag, p);
+    Object.assign(editDrag.boxEl.style, {
+      left: r.x*100 + '%', top: r.y*100 + '%',
+      width: r.w*100 + '%', height: r.h*100 + '%',
+    });
+    editDrag.lastRect = r;
+  };
+
+  const onEditUp = async (e) => {
+    if (!editDrag) return;
+    const r = editDrag.lastRect || editDrag.startRect;
+    const cabId = editDrag.cabId;
+    editDrag = null;
+    const cab = cabinets.find(c => c.id === cabId);
+    if (!cab) return;
+    // 仅在实际改变时落库
+    const same = ['x','y','w','h'].every(k => Math.abs(cab.rect[k] - r[k]) < 0.001);
+    if (!same) {
+      cab.rect = r;
+      await db.put('cabinets', cab);
+    }
+    renderBoxes();
+  };
+
+  // 用 pointer 事件统一覆盖鼠标 + 触摸
+  boxesEl.addEventListener('pointerdown', onEditDown);
+  boxesEl.addEventListener('pointermove', onEditMove);
+  boxesEl.addEventListener('pointerup',   onEditUp);
+  boxesEl.addEventListener('pointercancel', onEditUp);
+  // 点击 stage 空白处也能取消选中
+  stage.addEventListener('pointerdown', (e) => {
+    if (!editingBoxes) return;
+    if (e.target === stage || e.target === img) {
+      if (selectedCabId) { selectedCabId = null; renderBoxes(); }
+    }
+  });
 
   /* ----- 柜子详情弹窗 ----- */
   async function openCabinetDialog(cab) {
@@ -891,7 +1437,9 @@ async function renderPhotoDetail(app, photoId) {
       const image = itemPhoto || await generateItemThumb(name);
       await db.add('items', {
         id: uid(), cabinetId: cab.id, roomId: cab.roomId,
-        name, qty, note, tags: [], image, createdAt: Date.now()
+        name, qty, note, tags: [], image,
+        status: 'placed', source: 'manual',
+        createdAt: Date.now()
       });
       itemPhoto = null;
       toast('已添加');
@@ -925,9 +1473,11 @@ async function renderPhotoDetail(app, photoId) {
  * 页面：全局物品视图（按房间 → 柜子 分组）
  * ================================================================ */
 async function renderItems(app) {
-  const [rooms, cabinets, items] = await Promise.all([
+  const [rooms, cabinets, allItems] = await Promise.all([
     db.all('rooms'), db.all('cabinets'), db.all('items')
   ]);
+  // 物品页不显示待处理物品（它们在 Inbox 里）
+  const items = allItems.filter(i => i.status !== 'pending');
   const photos = await db.all('photos');
   const cabMap = Object.fromEntries(cabinets.map(c => [c.id, c]));
   const roomMap = Object.fromEntries(rooms.map(r => [r.id, r]));
@@ -944,12 +1494,13 @@ async function renderItems(app) {
   });
 
   const totalItems = items.reduce((s, i) => s + (i.qty || 1), 0);
+  const normalCabCount = cabinets.filter(c => !isLooseCabinet(c)).length;
 
   app.innerHTML = `
     ${header({
       title: '所有物品',
       subtitle: items.length
-        ? `${rooms.length} 个房间 · ${cabinets.length} 个柜子 · ${totalItems} 件物品`
+        ? `${rooms.length} 个房间 · ${normalCabCount} 个柜子 · ${totalItems} 件物品`
         : '还没有记录物品',
     })}
     <div class="px-4 md:px-6 py-4">
@@ -1000,6 +1551,286 @@ async function renderItems(app) {
   $('#__goto')?.addEventListener('click', () => go('rooms'));
   $$('.room-link').forEach(b => b.onclick = () => go({ name: 'room', id: b.dataset.id }));
   $$('.cab-link').forEach(b => b.onclick = () => go({ name: 'photo', id: b.dataset.photo }));
+}
+
+/* ================================================================
+ * 页面：📥 待处理 Inbox
+ * ================================================================ */
+async function renderInbox(app) {
+  const [rooms, cabinets, allItems, photos] = await Promise.all([
+    db.all('rooms'), db.all('cabinets'), db.all('items'), db.all('photos'),
+  ]);
+  const pending = allItems.filter(i => i.status === 'pending');
+  const roomMap = Object.fromEntries(rooms.map(r => [r.id, r]));
+  const photoMap = Object.fromEntries(photos.map(p => [p.id, p]));
+
+  // 按房间分组
+  const groups = {};
+  pending.forEach(it => {
+    const rid = it.roomId || '__global__';
+    groups[rid] = groups[rid] || [];
+    groups[rid].push(it);
+  });
+  const groupIds = Object.keys(groups);
+
+  app.innerHTML = `
+    ${header({
+      title: '📥 待处理',
+      subtitle: pending.length === 0 ? '所有物品都已归位' : `共 ${pending.length} 件待处理物品`,
+    })}
+    <div class="px-4 md:px-6 py-4">
+      ${pending.length === 0 ? `
+        <div class="text-center py-16 bg-white rounded-2xl shadow-soft">
+          <div class="text-6xl mb-3">🎉</div>
+          <p class="text-ink-700 font-medium mb-1">干净利落！</p>
+          <p class="text-sm text-ink-500">所有 AI 识别出的物品都已经归位了。</p>
+        </div>
+      ` : groupIds.map(rid => {
+        const room = roomMap[rid];
+        const label = room ? `${room.icon || '🏠'} ${room.name}` : '📦 全屋自由区（未分类）';
+        const list = groups[rid];
+        return `
+          <section class="mb-6">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-semibold text-ink-900">${esc(label)}</h3>
+              <span class="chip">${list.length} 件</span>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              ${list.map(it => `
+                <button class="inbox-card text-left bg-white rounded-2xl shadow-soft hover:shadow-lg transition overflow-hidden" data-iid="${it.id}">
+                  <div class="aspect-square bg-slate-100">
+                    ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-4xl">${it.aiEmoji || '📦'}</div>`}
+                  </div>
+                  <div class="p-2">
+                    <div class="text-sm font-medium text-ink-900 truncate">${esc(it.name)}</div>
+                    <div class="text-xs text-ink-500 mt-0.5">✨ AI 识别</div>
+                  </div>
+                </button>
+              `).join('')}
+            </div>
+          </section>
+        `;
+      }).join('')}
+    </div>
+  `;
+
+  $$('.inbox-card').forEach(b => {
+    b.onclick = () => {
+      const item = pending.find(x => x.id === b.dataset.iid);
+      if (item) openItemProcessDialog(item);
+    };
+  });
+}
+
+/* ---------- 自由区物品列表弹窗（房间级或全屋级） ---------- */
+async function openLooseListDialog(cab, room) {
+  const items = (await db.byIndex('items', 'cabinetId', cab.id));
+  items.sort((a, b) => {
+    // pending 靠前，然后按时间倒序
+    if ((a.status === 'pending') !== (b.status === 'pending')) {
+      return a.status === 'pending' ? -1 : 1;
+    }
+    return b.createdAt - a.createdAt;
+  });
+
+  const title = cab.type === 'loose-global' ? '📦 全屋自由区' : `📥 ${room?.name || ''} · 自由物品收纳处`;
+
+  const m = modal(`
+    <div class="p-5">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h3 class="text-base font-semibold text-ink-900">${esc(title)}</h3>
+          <p class="text-xs text-ink-500 mt-1">${items.length} 件物品${items.filter(i => i.status === 'pending').length > 0 ? ` · ${items.filter(i => i.status === 'pending').length} 件待处理` : ''}</p>
+        </div>
+      </div>
+      ${items.length === 0 ? `
+        <div class="text-center py-8 text-ink-500 text-sm">还没有物品</div>
+      ` : `
+        <div class="grid grid-cols-3 md:grid-cols-4 gap-2 max-h-[60vh] overflow-y-auto">
+          ${items.map(it => `
+            <button class="loose-item text-left bg-slate-50 hover:bg-brand-50 rounded-xl overflow-hidden transition" data-iid="${it.id}">
+              <div class="aspect-square bg-white">
+                ${it.image ? `<img src="${blobURL(it.image, 'lo-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-3xl">${it.aiEmoji || '📦'}</div>`}
+              </div>
+              <div class="p-2">
+                <div class="text-xs font-medium text-ink-900 truncate">${esc(it.name)}</div>
+                ${it.status === 'pending' ? `<div class="text-[10px] text-amber-600 mt-0.5">✨ 待处理</div>` : `<div class="text-[10px] text-ink-500 mt-0.5">已归位</div>`}
+              </div>
+            </button>
+          `).join('')}
+        </div>
+      `}
+    </div>
+  `);
+
+  m.root.querySelectorAll('.loose-item').forEach(b => {
+    b.onclick = () => {
+      const it = items.find(x => x.id === b.dataset.iid);
+      if (it) { m.close(); openItemProcessDialog(it); }
+    };
+  });
+}
+
+
+async function openItemProcessDialog(item) {
+  const [rooms, cabinets, photos] = await Promise.all([
+    db.all('rooms'), db.all('cabinets'), db.all('photos')
+  ]);
+  const sourcePhoto = item.sourcePhotoId ? photos.find(p => p.id === item.sourcePhotoId) : null;
+
+  // 当前 item 所属房间（可能是 __global__）
+  const currentRoomId = item.roomId && rooms.find(r => r.id === item.roomId) ? item.roomId : '__global__';
+
+  const m = modal(`
+    <div class="p-5 space-y-4">
+      <div class="flex items-start gap-3">
+        <div class="w-24 h-24 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0">
+          ${item.image ? `<img id="ip-img" src="${blobURL(item.image, 'ip-' + item.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-4xl">${item.aiEmoji || '📦'}</div>`}
+        </div>
+        <div class="flex-1 min-w-0">
+          <input id="ip-name" type="text" value="${esc(item.name)}" class="w-full text-base font-semibold bg-transparent border-b border-slate-200 focus:border-brand-500 outline-none py-1"/>
+          <div class="flex items-center gap-2 mt-2">
+            <label class="text-xs text-ink-500">数量</label>
+            <input id="ip-qty" type="number" min="1" value="${item.qty || 1}" class="w-16 h-8 px-2 rounded-lg bg-slate-50 border border-transparent focus:border-brand-500 outline-none text-sm text-center"/>
+          </div>
+          <label class="inline-block mt-2">
+            <input id="ip-photo" type="file" accept="image/*" class="hidden"/>
+            <span class="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700 cursor-pointer">
+              📷 替换配图
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div>
+        <label class="text-xs font-medium text-ink-500">备注</label>
+        <input id="ip-note" type="text" value="${esc(item.note || '')}" placeholder="备注（可选）" class="w-full mt-1 h-9 px-3 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm"/>
+      </div>
+
+      <div class="bg-brand-50 rounded-xl p-3 space-y-2">
+        <div class="text-xs font-semibold text-brand-700">放到哪里</div>
+        <div class="flex gap-2">
+          <select id="ip-room" class="flex-1 h-10 px-3 rounded-lg bg-white border border-slate-200 text-sm">
+            ${rooms.map(r => `<option value="${r.id}" ${r.id === currentRoomId ? 'selected' : ''}>${r.icon || '🏠'} ${esc(r.name)}</option>`).join('')}
+            <option value="__global__" ${currentRoomId === '__global__' ? 'selected' : ''}>📦 全屋自由区</option>
+          </select>
+          <select id="ip-cab" class="flex-1 h-10 px-3 rounded-lg bg-white border border-slate-200 text-sm"></select>
+        </div>
+        ${sourcePhoto ? `
+          <details class="text-xs text-ink-500 mt-2">
+            <summary class="cursor-pointer hover:text-ink-700">📷 查看来源照片位置</summary>
+            <div class="mt-2 relative inline-block">
+              <img src="${blobURL(sourcePhoto.blob, sourcePhoto.id)}" class="max-w-full max-h-48 rounded-lg"/>
+              ${item.aiRect ? `<div class="absolute border-2 border-amber-500 bg-amber-500/20 rounded" style="left:${item.aiRect.x*100}%;top:${item.aiRect.y*100}%;width:${item.aiRect.w*100}%;height:${item.aiRect.h*100}%;"></div>` : ''}
+            </div>
+          </details>
+        ` : ''}
+      </div>
+
+      <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+        <button id="ip-del" class="text-red-500 text-xs hover:text-red-700">🗑️ 删除这个物品</button>
+        <div class="flex gap-2">
+          <button id="ip-cancel" class="h-9 px-4 rounded-lg bg-slate-100 hover:bg-slate-200 text-sm">取消</button>
+          <button id="ip-save" class="h-9 px-5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium shadow-soft">保存并归位</button>
+        </div>
+      </div>
+    </div>
+  `);
+
+  const roomSel = m.root.querySelector('#ip-room');
+  const cabSel = m.root.querySelector('#ip-cab');
+  const nameEl = m.root.querySelector('#ip-name');
+  const qtyEl = m.root.querySelector('#ip-qty');
+  const noteEl = m.root.querySelector('#ip-note');
+  const imgEl = m.root.querySelector('#ip-img');
+  const photoInput = m.root.querySelector('#ip-photo');
+
+  // 新图（如果用户替换配图，先缓存）
+  let newImage = null;
+
+  photoInput?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    toast('处理图片中…');
+    const { blob } = await compressImage(file, 400, 0.82);
+    newImage = blob;
+    if (imgEl) {
+      imgEl.src = blobURL(blob, 'ip-new');
+    }
+    toast('配图已替换');
+  });
+
+  // 柜子下拉联动：选房间时更新柜子列表
+  const refreshCabOptions = async () => {
+    const rid = roomSel.value;
+    let options = '';
+    if (rid === '__global__') {
+      // 全屋自由区，柜子选项只有"全屋自由区"
+      await ensureGlobalLooseCabinet();
+      options = `<option value="__global_loose__">📦 保留在全屋自由区</option>`;
+    } else {
+      // 该房间的所有 normal 柜子 + 房间自由区
+      const cabs = cabinets.filter(c => c.roomId === rid);
+      const normal = cabs.filter(c => c.type === 'normal' || !c.type);
+      normal.sort((a, b) => a.name.localeCompare(b.name));
+      const looseOpt = `<option value="__room_loose__">📥 留在此房间的自由区</option>`;
+      options = normal.map(c => `<option value="${c.id}" ${c.id === item.cabinetId ? 'selected' : ''}>🗄️ ${esc(c.name)}</option>`).join('') + looseOpt;
+    }
+    cabSel.innerHTML = options;
+
+    // 如果当前 item.cabinetId 对应的柜子属于"该房间的自由区"，默认选中 __room_loose__
+    const currentCab = cabinets.find(c => c.id === item.cabinetId);
+    if (currentCab && isLooseCabinet(currentCab)) {
+      if (currentCab.type === 'loose-global') cabSel.value = '__global_loose__';
+      else cabSel.value = '__room_loose__';
+    }
+  };
+  roomSel.addEventListener('change', refreshCabOptions);
+  await refreshCabOptions();
+
+  m.root.querySelector('#ip-cancel').onclick = () => m.close();
+
+  m.root.querySelector('#ip-del').onclick = async () => {
+    if (!confirm('确认删除这个物品？')) return;
+    await db.del('items', item.id);
+    toast('已删除');
+    m.close();
+    render();
+  };
+
+  m.root.querySelector('#ip-save').onclick = async () => {
+    const name = nameEl.value.trim();
+    if (!name) { toast('请填物品名'); return; }
+    const qty = parseInt(qtyEl.value) || 1;
+    const note = noteEl.value.trim();
+    const rid = roomSel.value;
+    const cabChoice = cabSel.value;
+
+    let targetCab;
+    if (cabChoice === '__global_loose__') {
+      targetCab = await ensureGlobalLooseCabinet();
+    } else if (cabChoice === '__room_loose__') {
+      targetCab = await ensureLooseCabinet(rid);
+    } else {
+      targetCab = cabinets.find(c => c.id === cabChoice);
+    }
+    if (!targetCab) { toast('请选择目的地'); return; }
+
+    const updated = {
+      ...item,
+      name,
+      qty,
+      note,
+      cabinetId: targetCab.id,
+      roomId: targetCab.roomId === '__global__' ? '__global__' : targetCab.roomId,
+      status: 'placed',
+      image: newImage || item.image,
+    };
+    await db.put('items', updated);
+    toast('已归位');
+    m.close();
+    render();
+  };
 }
 
 /* ================================================================
@@ -1228,6 +2059,9 @@ async function renderSettings(app) {
     : '从未同步';
   const claudeKey = await getConfig('claude_api_key');
   const proxyUrl = await getConfig('claude_proxy_url');
+  const deepseekKey = await getConfig('deepseek_api_key');
+  const deepseekModel = await getConfig('deepseek_model', 'deepseek-v4-flash');
+  const openrouterKey = await getConfig('openrouter_api_key');
 
   app.innerHTML = `
     ${header({ title: '设置' })}
@@ -1293,19 +2127,16 @@ async function renderSettings(app) {
       </section>
 
       <section class="bg-white rounded-2xl shadow-soft p-4">
-        <h3 class="text-sm font-semibold mb-3">🤖 AI 柜子识别（Claude Vision）</h3>
-        <p class="text-xs text-ink-500 mb-3">填入 Anthropic API Key 后，在照片详情页点「AI 识别」即可用 Claude Vision 自动识别柜子位置。</p>
-        <label class="block text-xs text-ink-500 mb-1">API Key</label>
-        <input id="apikey" type="password" value="${esc(claudeKey)}" placeholder="sk-ant-api03-..."
-          class="w-full h-10 px-3 rounded-xl border border-slate-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none text-sm font-mono"/>
-        <label class="block text-xs text-ink-500 mb-1 mt-3">代理 URL（可选，解决 CORS 问题）</label>
-        <input id="proxyurl" type="text" value="${esc(proxyUrl)}" placeholder="https://your-cors-proxy.com/"
-          class="w-full h-10 px-3 rounded-xl border border-slate-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none text-sm font-mono"/>
-        <div class="flex gap-2 mt-3">
-          <button id="savekey" class="h-10 px-4 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium">保存</button>
-          ${claudeKey ? `<span class="chip" style="background:#dcfce7;color:#166534">已配置</span>` : `<span class="chip" style="background:#fef3c7;color:#92400e">未配置</span>`}
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-sm font-semibold">🤖 AI 配置</h3>
+          <button id="openapi" class="h-8 px-3 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-xs font-medium">配置 API</button>
         </div>
-        <p class="text-xs text-ink-500 mt-2">如遇 CORS 错误，可填入代理 URL（如 Cloudflare Worker 或本地代理）。</p>
+        <div class="flex gap-2 flex-wrap">
+          ${openrouterKey ? `<span class="chip" style="background:#dcfce7;color:#166534">Gemini 已配置</span>` : `<span class="chip" style="background:#fef3c7;color:#92400e">Gemini 未配置</span>`}
+          ${deepseekKey ? `<span class="chip" style="background:#dcfce7;color:#166534">DeepSeek 已配置</span>` : `<span class="chip" style="background:#fef3c7;color:#92400e">DeepSeek 未配置</span>`}
+          ${claudeKey ? `<span class="chip" style="background:#dcfce7;color:#166534">Claude 已配置</span>` : `<span class="chip" style="background:#fef3c7;color:#92400e">Claude 未配置</span>`}
+        </div>
+        <p class="text-xs text-ink-500 mt-2">Gemini Vision (OpenRouter) 用于柜子图片识别，DeepSeek 用于文本分析，Claude 为备选。</p>
       </section>
 
       <section class="bg-white rounded-2xl shadow-soft p-4">
@@ -1341,20 +2172,717 @@ async function renderSettings(app) {
     toast('已清空');
     go('rooms');
   });
-  $('#savekey')?.addEventListener('click', async () => {
-    const key = $('#apikey').value.trim();
-    const proxy = $('#proxyurl').value.trim();
-    await setConfig('claude_api_key', key);
-    await setConfig('claude_proxy_url', proxy);
-    toast(key ? 'API Key 已保存' : 'API Key 已清除');
-    render();
-  });
+  $('#openapi')?.addEventListener('click', () => openApiConfigModal());
   $('#loaddemo')?.addEventListener('click', async () => {
     localStorage.removeItem('hi-demo-cleared');
     const loaded = await loadDemoData();
     if (!loaded) toast('已有示例数据，无需重复加载');
     render();
   });
+}
+
+/* ================================================================
+ * DeepSeek API 集成（OpenAI 兼容格式）
+ * ================================================================ */
+const DEEPSEEK_API = 'https://api.deepseek.com/chat/completions';
+
+async function callDeepSeek(messages, { model, apiKey, maxTokens = 1024, temperature = 0.7 } = {}) {
+  const res = await fetch(DEEPSEEK_API, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: model || 'deepseek-v4-flash',
+      messages,
+      max_tokens: maxTokens,
+      temperature,
+    })
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`DeepSeek API (${res.status}): ${err.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+
+/* ================================================================
+ * OpenRouter API 集成（Gemini Vision 图片识别）
+ * ================================================================ */
+const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
+
+async function callOpenRouter(messages, { model, apiKey, maxTokens = 1024 } = {}) {
+  const res = await fetch(OPENROUTER_API, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: model || 'google/gemini-2.5-flash',
+      messages,
+      max_tokens: maxTokens,
+    })
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenRouter API (${res.status}): ${err.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || 'OpenRouter 返回错误');
+  return data.choices?.[0]?.message?.content || '';
+}
+
+async function detectCabinetsWithGemini(blob, { width, height }) {
+  const apiKey = await getConfig('openrouter_api_key');
+  if (!apiKey) throw new Error('请先在设置页填入 OpenRouter API Key');
+  const model = await getConfig('openrouter_model', 'google/gemini-2.5-flash');
+
+  // 压缩图片
+  const maxSide = 1568;
+  let imgBlob = blob;
+  if (blob && blob.size > 100 && Math.max(width, height) > maxSide) {
+    const ratio = maxSide / Math.max(width, height);
+    const nw = Math.round(width * ratio), nh = Math.round(height * ratio);
+    const bmp = await createImageBitmap(blob).catch(() => null);
+    if (bmp) {
+      const c = document.createElement('canvas');
+      c.width = nw; c.height = nh;
+      c.getContext('2d').drawImage(bmp, 0, 0, nw, nh);
+      imgBlob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+      bmp.close();
+    }
+  }
+
+  const base64 = await fileToBase64(imgBlob);
+  const dataUrl = `data:image/jpeg;base64,${base64}`;
+
+  const text = await callOpenRouter([{
+    role: 'user',
+    content: [
+      { type: 'image_url', image_url: { url: dataUrl } },
+      { type: 'text', text: CABINET_DETECT_PROMPT }
+    ]
+  }], { model, apiKey, maxTokens: 8192 });
+
+  return parseDetection(text);
+}
+
+/* ================================================================
+ * AI 对话：收纳建议 + 重命名建议
+ * ================================================================ */
+async function chatWithAI(messages) {
+  // 优先用 DeepSeek（纯文本对话），其次 OpenRouter
+  const dk = await getConfig('deepseek_api_key');
+  if (dk) {
+    const model = await getConfig('deepseek_model', 'deepseek-v4-flash');
+    return await callDeepSeek(messages, { model, apiKey: dk, maxTokens: 4096, temperature: 0.6 });
+  }
+  const orKey = await getConfig('openrouter_api_key');
+  if (orKey) {
+    const model = await getConfig('openrouter_model', 'google/gemini-2.5-flash');
+    return await callOpenRouter(messages, { model, apiKey: orKey, maxTokens: 4096 });
+  }
+  throw new Error('请先在「设置 → 配置 API」中填入 DeepSeek 或 OpenRouter 的 API Key');
+}
+
+/* 流式聊天 —— SSE 解析，实时触发 onDelta(chunkText) 回调
+ * 返回完整的拼接文本。abortSignal 可用于中途取消。
+ */
+async function streamChatWithAI(messages, onDelta, abortSignal) {
+  const dk = await getConfig('deepseek_api_key');
+  const orKey = await getConfig('openrouter_api_key');
+
+  let url, apiKey, model;
+  if (dk) {
+    url = DEEPSEEK_API;
+    apiKey = dk;
+    model = await getConfig('deepseek_model', 'deepseek-v4-flash');
+  } else if (orKey) {
+    url = OPENROUTER_API;
+    apiKey = orKey;
+    model = await getConfig('openrouter_model', 'google/gemini-2.5-flash');
+  } else {
+    throw new Error('请先在「设置 → 配置 API」中填入 DeepSeek 或 OpenRouter 的 API Key');
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: 4096,
+      temperature: 0.6,
+      stream: true,
+    }),
+    signal: abortSignal,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`API (${res.status}): ${err.slice(0, 200)}`);
+  }
+  if (!res.body) throw new Error('当前环境不支持流式响应');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let full = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // SSE: 以 "\n\n" 分隔事件；每个事件内可能多行 "data: ..."
+    let sepIdx;
+    while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = buffer.slice(0, sepIdx);
+      buffer = buffer.slice(sepIdx + 2);
+      const lines = rawEvent.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === '[DONE]') { return full; }
+        if (!payload) continue;
+        try {
+          const json = JSON.parse(payload);
+          const delta = json.choices?.[0]?.delta?.content
+                     ?? json.choices?.[0]?.message?.content
+                     ?? '';
+          if (delta) {
+            full += delta;
+            try { onDelta(delta, full); } catch (_) {}
+          }
+        } catch (_) {
+          // OpenRouter 有时会发 ": OPENROUTER PROCESSING" 之类的注释行，忽略
+        }
+      }
+    }
+  }
+  return full;
+}
+
+function buildChatSystemPrompt(rooms, cabinets, items) {
+  // rooms: Array<{id,name,icon}>
+  // cabinets: Array<cabinet>
+  // items: Array<item>
+  const itemsByCab = new Map();
+  items.forEach(it => {
+    if (!itemsByCab.has(it.cabinetId)) itemsByCab.set(it.cabinetId, []);
+    itemsByCab.get(it.cabinetId).push(it);
+  });
+
+  const blocks = rooms.map(room => {
+    const cabsInRoom = cabinets.filter(c => c.roomId === room.id && !isLooseCabinet(c));
+    if (cabsInRoom.length === 0) return `### ${room.icon || '🏠'} ${room.name}\n（无储物单元）`;
+    const lines = cabsInRoom.map((c, i) => {
+      const its = itemsByCab.get(c.id) || [];
+      const itemDesc = its.length === 0
+        ? '（暂无物品）'
+        : its.slice(0, 12).map(it => it.name + (it.qty > 1 ? `×${it.qty}` : '')).join('、')
+          + (its.length > 12 ? `… 等共 ${its.length} 件` : '');
+      return `${i + 1}. [id=${c.id}] ${c.name}：${itemDesc}`;
+    }).join('\n');
+    return `### ${room.icon || '🏠'} ${room.name}（${cabsInRoom.length} 个储物单元）\n${lines}`;
+  }).join('\n\n');
+
+  const totalCabs = cabinets.filter(c => !isLooseCabinet(c)).length;
+  const totalItems = items.filter(i => i.status !== 'pending').length;
+  return `你是家居收纳整理助手。用户家中共 ${rooms.length} 个房间、${totalCabs} 个储物单元、${totalItems} 件物品。
+
+【全部储物单元清单（按房间分组）】
+${blocks || '（用户还没有标注任何储物单元）'}
+
+【你能帮用户做什么】
+1. 给储物单元起更语义化的名字（基于里面的物品推断用途，比如"白色吊柜2"看到里面是杯子可以建议改为"杯具收纳柜"）
+2. 推荐某类物品该放进哪个柜子（基于现有分类规律，可跨房间）
+3. 整理建议：如何分类、哪些柜子适合放高频/低频物品、空间利用建议
+4. 跨房间梳理：哪些物品可以归并到一起、哪些柜子明显偏离主题
+
+【重要：重命名建议的输出格式】
+当你建议重命名某些储物单元时，必须在回复正文之后追加一段 JSON 代码块（仅当确实有重命名建议时才输出，否则不要输出）：
+\`\`\`rename
+[{"id":"<上面清单里的id原值>","newName":"建议名"}]
+\`\`\`
+- id 必须严格使用上面清单中 [id=xxx] 的原值，不要修改、不要省略
+- newName 控制在 12 个字以内，要语义清晰
+- 一次回复最多建议 8 条
+- 不要在 JSON 之外重复罗列这些 id
+
+回答风格：简洁、有条理、说人话；列举建议时用编号或要点。`;
+}
+
+async function openChatPanel() {
+  // 关闭旧的（如果存在）
+  document.querySelectorAll('.chat-backdrop, .chat-drawer').forEach(el => el.remove());
+
+  // 拉取全部数据
+  const [rooms, cabinets, items] = await Promise.all([
+    db.all('rooms'),
+    db.all('cabinets'),
+    db.all('items'),
+  ]);
+
+  const systemPrompt = buildChatSystemPrompt(rooms, cabinets, items);
+  const messages = [{ role: 'system', content: systemPrompt }];
+
+  // 展示用的"有效"计数（排除自由区和待处理物品）
+  const displayCabs = cabinets.filter(c => !isLooseCabinet(c)).length;
+  const displayItems = items.filter(i => i.status !== 'pending').length;
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'chat-backdrop';
+  const drawer = document.createElement('div');
+  drawer.className = 'chat-drawer';
+  drawer.innerHTML = `
+    <div class="chat-head">
+      <div class="text-2xl">💬</div>
+      <div class="flex-1">
+        <div class="font-semibold text-ink-900 text-sm">AI 收纳助手</div>
+        <div class="text-xs text-ink-500">${rooms.length} 个房间 · ${displayCabs} 个储物单元 · ${displayItems} 件物品</div>
+      </div>
+      <button class="chat-close w-8 h-8 rounded-full hover:bg-slate-100 text-ink-500" title="关闭">
+        <svg class="mx-auto" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="chat-body" id="chat-body"></div>
+    <div class="chat-input-area">
+      <textarea id="chat-input" rows="1" placeholder="例如：帮我给这些柜子起更好的名字"
+        class="flex-1 max-h-32 resize-none px-3 py-2 rounded-xl bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm"></textarea>
+      <button id="chat-send" class="h-9 px-4 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium shadow-soft">发送</button>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  document.body.appendChild(drawer);
+  requestAnimationFrame(() => {
+    backdrop.classList.add('open');
+    drawer.classList.add('open');
+  });
+
+  const bodyEl = drawer.querySelector('#chat-body');
+  const inputEl = drawer.querySelector('#chat-input');
+  const sendBtn = drawer.querySelector('#chat-send');
+
+  let busy = false;
+
+  const hint = document.createElement('div');
+  hint.className = 'chat-msg ai';
+  hint.textContent = `你好！我已经了解了你家中所有 ${rooms.length} 个房间、${displayCabs} 个储物单元的物品分布。可以问我：
+• 帮所有/某个房间的柜子起更好的名字
+• 我刚买的（某物品）应该放进哪个柜子
+• 现在的收纳布局有什么改进建议
+• 哪些柜子里堆得太杂需要整理`;
+  bodyEl.appendChild(hint);
+
+  const renderRenameCard = (suggestions) => {
+    const card = document.createElement('div');
+    card.className = 'rename-card';
+    card.innerHTML = `
+      <div class="text-xs text-amber-700 font-semibold mb-2">💡 重命名建议</div>
+      ${suggestions.map((s, i) => {
+        const cab = cabinets.find(c => c.id === s.id);
+        if (!cab) return '';
+        return `
+          <div class="rename-row" data-idx="${i}">
+            <span class="old-name">${esc(cab.name)}</span>
+            <span class="text-amber-500">→</span>
+            <span class="new-name">${esc(s.newName)}</span>
+            <button class="adopt" data-cab-id="${s.id}" data-new-name="${esc(s.newName)}">采纳</button>
+          </div>
+        `;
+      }).join('')}
+      ${suggestions.length > 1 ? `<button class="adopt-all mt-2 w-full py-1.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 text-xs font-medium">全部采纳</button>` : ''}
+    `;
+    card.querySelectorAll('button.adopt').forEach(btn => {
+      btn.onclick = async () => {
+        if (btn.classList.contains('adopted')) return;
+        const cabId = btn.dataset.cabId;
+        const newName = btn.dataset.newName;
+        const cab = cabinets.find(c => c.id === cabId);
+        if (!cab) return;
+        cab.name = newName;
+        await db.put('cabinets', cab);
+        btn.textContent = '✓ 已采纳';
+        btn.classList.add('adopted');
+        toast('已重命名');
+      };
+    });
+    const allBtn = card.querySelector('.adopt-all');
+    if (allBtn) {
+      allBtn.onclick = async () => {
+        for (const btn of card.querySelectorAll('button.adopt')) {
+          if (!btn.classList.contains('adopted')) btn.click();
+        }
+      };
+    }
+    return card;
+  };
+
+  const renderAIMessage = (text) => {
+    const renameRe = /```rename\s*([\s\S]*?)```/i;
+    const match = text.match(renameRe);
+    let prose = text;
+    let suggestions = null;
+    if (match) {
+      prose = text.replace(match[0], '').trim();
+      try {
+        const parsed = JSON.parse(match[1].trim());
+        if (Array.isArray(parsed)) {
+          suggestions = parsed
+            .filter(s => s && typeof s.id === 'string' && typeof s.newName === 'string')
+            .filter(s => cabinets.find(c => c.id === s.id))
+            .slice(0, 8);
+        }
+      } catch (_) { /* 忽略解析错误 */ }
+    }
+
+    if (prose) {
+      const msg = document.createElement('div');
+      msg.className = 'chat-msg ai';
+      msg.textContent = prose;
+      bodyEl.appendChild(msg);
+    }
+    if (suggestions && suggestions.length > 0) {
+      bodyEl.appendChild(renderRenameCard(suggestions));
+    }
+  };
+
+  const send = async () => {
+    if (busy) return;
+    const text = inputEl.value.trim();
+    if (!text) return;
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+
+    const userMsg = document.createElement('div');
+    userMsg.className = 'chat-msg user';
+    userMsg.textContent = text;
+    bodyEl.appendChild(userMsg);
+    bodyEl.scrollTop = bodyEl.scrollHeight;
+
+    messages.push({ role: 'user', content: text });
+
+    // 流式气泡：先显示打字点，首个 chunk 到达时替换为文本
+    const streamMsg = document.createElement('div');
+    streamMsg.className = 'chat-msg ai streaming';
+    streamMsg.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>`;
+    bodyEl.appendChild(streamMsg);
+    bodyEl.scrollTop = bodyEl.scrollHeight;
+
+    busy = true;
+    sendBtn.disabled = true;
+    sendBtn.textContent = '停止';
+    const prevOnClick = sendBtn.onclick;
+    const abortCtrl = new AbortController();
+    sendBtn.onclick = () => abortCtrl.abort();
+
+    let firstChunk = true;
+    // 在流式过程中隐藏 rename JSON 块，只显示正文部分
+    const renderStream = (full) => {
+      // 流中可能包含未闭合的 ```rename ... ，这里剥离已出现的 ```rename 块及之后的内容
+      let display = full;
+      const idx = display.indexOf('```rename');
+      if (idx !== -1) display = display.slice(0, idx).trimEnd();
+      streamMsg.textContent = display;
+    };
+
+    try {
+      const reply = await streamChatWithAI(messages, (_delta, full) => {
+        if (firstChunk) { streamMsg.innerHTML = ''; firstChunk = false; }
+        renderStream(full);
+        bodyEl.scrollTop = bodyEl.scrollHeight;
+      }, abortCtrl.signal);
+
+      // 流结束：最终展示——剥离 rename JSON、追加采纳卡片
+      streamMsg.remove();
+      messages.push({ role: 'assistant', content: reply });
+      renderAIMessage(reply);
+    } catch (e) {
+      streamMsg.remove();
+      if (e.name === 'AbortError') {
+        const note = document.createElement('div');
+        note.className = 'chat-msg ai';
+        note.textContent = '（已停止）';
+        note.style.opacity = '0.6';
+        bodyEl.appendChild(note);
+      } else {
+        const err = document.createElement('div');
+        err.className = 'chat-msg error';
+        err.textContent = '⚠️ ' + e.message;
+        bodyEl.appendChild(err);
+      }
+    } finally {
+      busy = false;
+      sendBtn.disabled = false;
+      sendBtn.textContent = '发送';
+      sendBtn.onclick = prevOnClick;
+      bodyEl.scrollTop = bodyEl.scrollHeight;
+      inputEl.focus();
+    }
+  };
+
+  sendBtn.onclick = send;
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      send();
+    }
+  });
+  inputEl.addEventListener('input', () => {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 128) + 'px';
+  });
+
+  const closePanel = () => {
+    backdrop.classList.remove('open');
+    drawer.classList.remove('open');
+    setTimeout(() => { backdrop.remove(); drawer.remove(); }, 250);
+    document.removeEventListener('keydown', onEsc);
+  };
+  const onEsc = (e) => { if (e.key === 'Escape') closePanel(); };
+  drawer.querySelector('.chat-close').onclick = closePanel;
+  backdrop.onclick = closePanel;
+  document.addEventListener('keydown', onEsc);
+}
+
+/* ================================================================
+ * API 配置弹窗（DeepSeek + Claude，含连通性测试）
+ * ================================================================ */
+async function openApiConfigModal() {
+  const dk = await getConfig('deepseek_api_key');
+  const dm = await getConfig('deepseek_model', 'deepseek-v4-flash');
+  const orKey = await getConfig('openrouter_api_key');
+  const orModel = await getConfig('openrouter_model', 'google/gemini-2.5-flash');
+  const ck = await getConfig('claude_api_key');
+  const px = await getConfig('claude_proxy_url');
+
+  // 生成测试图片（带 3 个标注方块）
+  async function makeTestBlob() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 400; canvas.height = 300;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#f1f5f9'; ctx.fillRect(0, 0, 400, 300);
+    ctx.fillStyle = '#8b5cf6'; ctx.fillRect(20, 40, 160, 220);
+    ctx.fillStyle = '#3b82f6'; ctx.fillRect(220, 40, 160, 100);
+    ctx.fillStyle = '#10b981'; ctx.fillRect(220, 160, 160, 100);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('柜子A', 100, 160); ctx.fillText('柜子B', 300, 100); ctx.fillText('柜子C', 300, 220);
+    return new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+  }
+
+  const m = modal(`
+    <div class="p-5 max-h-[85vh] overflow-y-auto">
+      <h3 class="text-lg font-semibold mb-4">🤖 AI 配置</h3>
+
+      <!-- OpenRouter / Gemini 配置 -->
+      <div class="mb-5 p-4 rounded-2xl border-2 border-emerald-200 bg-emerald-50/50">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-base">🟢</span>
+          <h4 class="text-sm font-semibold">OpenRouter · Gemini Vision</h4>
+          <span class="chip" style="background:#dcfce7;color:#166534">推荐 · 图片识别</span>
+        </div>
+        <label class="block text-xs text-ink-500 mb-1">API Key</label>
+        <input id="or-key" type="password" value="${esc(orKey)}" placeholder="sk-or-v1-..."
+          class="w-full h-10 px-3 rounded-xl border border-slate-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none text-sm font-mono"/>
+        <div class="flex gap-2 mt-2">
+          <label class="block text-xs text-ink-500 mb-1 flex-1">模型</label>
+        </div>
+        <div class="flex flex-wrap gap-x-4 gap-y-1">
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input type="radio" name="or-model" value="google/gemini-2.5-flash" ${orModel === 'google/gemini-2.5-flash' ? 'checked' : ''} class="accent-emerald-500"/>
+            <span>2.5 Flash</span>
+          </label>
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input type="radio" name="or-model" value="google/gemini-3.1-flash-lite" ${orModel === 'google/gemini-3.1-flash-lite' ? 'checked' : ''} class="accent-emerald-500"/>
+            <span>3.1 Flash Lite</span>
+          </label>
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input type="radio" name="or-model" value="google/gemini-3.1-pro-preview" ${orModel === 'google/gemini-3.1-pro-preview' ? 'checked' : ''} class="accent-emerald-500"/>
+            <span>3.1 Pro</span>
+          </label>
+        </div>
+        <div class="flex gap-2 mt-3">
+          <button id="or-test" class="h-9 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-medium">测试连接（发送图片）</button>
+          <span id="or-status" class="text-xs self-center"></span>
+        </div>
+      </div>
+
+      <!-- DeepSeek 配置 -->
+      <div class="mb-5">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-base">🔵</span>
+          <h4 class="text-sm font-semibold">DeepSeek</h4>
+          <span class="text-xs text-ink-500">文本分析</span>
+        </div>
+        <label class="block text-xs text-ink-500 mb-1">API Key</label>
+        <input id="dk-key" type="password" value="${esc(dk)}" placeholder="sk-..."
+          class="w-full h-10 px-3 rounded-xl border border-slate-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none text-sm font-mono"/>
+        <div class="flex gap-4 mt-2">
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input type="radio" name="dk-model" value="deepseek-v4-flash" ${dm === 'deepseek-v4-flash' ? 'checked' : ''} class="accent-brand-500"/>
+            <span>v4-flash</span>
+          </label>
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input type="radio" name="dk-model" value="deepseek-v4-pro" ${dm === 'deepseek-v4-pro' ? 'checked' : ''} class="accent-brand-500"/>
+            <span>v4-pro</span>
+          </label>
+        </div>
+        <div class="flex gap-2 mt-3">
+          <button id="dk-test" class="h-9 px-4 rounded-xl bg-blue-500 hover:bg-blue-600 text-white text-xs font-medium">测试连接</button>
+          <span id="dk-status" class="text-xs self-center"></span>
+        </div>
+      </div>
+
+      <hr class="my-4 border-slate-100"/>
+
+      <!-- Claude 配置 -->
+      <div class="mb-5">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-base">🟣</span>
+          <h4 class="text-sm font-semibold">Claude Vision</h4>
+          <span class="text-xs text-ink-500">备选图片识别</span>
+        </div>
+        <label class="block text-xs text-ink-500 mb-1">API Key</label>
+        <input id="ck-key" type="password" value="${esc(ck)}" placeholder="sk-ant-api03-..."
+          class="w-full h-10 px-3 rounded-xl border border-slate-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none text-sm font-mono"/>
+        <label class="block text-xs text-ink-500 mb-1 mt-2">代理 URL（可选，解决 CORS）</label>
+        <input id="ck-proxy" type="text" value="${esc(px)}" placeholder="https://your-proxy.com/"
+          class="w-full h-10 px-3 rounded-xl border border-slate-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none text-sm font-mono"/>
+        <div class="flex gap-2 mt-3">
+          <button id="ck-test" class="h-9 px-4 rounded-xl bg-violet-500 hover:bg-violet-600 text-white text-xs font-medium">测试连接（含图片）</button>
+          <span id="ck-status" class="text-xs self-center"></span>
+        </div>
+      </div>
+
+      <!-- 说明 -->
+      <div class="bg-slate-50 rounded-xl p-3 mb-4">
+        <p class="text-xs text-ink-500 leading-relaxed">
+          <strong>OpenRouter</strong>：统一网关，一个 Key 调用多种模型。<a href="https://openrouter.ai/keys" target="_blank" class="text-brand-600 underline">获取 Key</a><br/>
+          <strong>DeepSeek</strong>：文本对话和分析，价格低。<a href="https://platform.deepseek.com" target="_blank" class="text-brand-600 underline">获取 Key</a><br/>
+          <strong>Claude Vision</strong>：备选图片识别。<a href="https://console.anthropic.com" target="_blank" class="text-brand-600 underline">获取 Key</a><br/>
+          <span class="text-ink-400">图片识别优先级：Gemini (OpenRouter) → Claude → 启发式占位</span>
+        </p>
+      </div>
+
+      <div class="flex justify-end gap-2">
+        <button id="cancel" class="h-10 px-5 rounded-xl text-ink-700 font-medium hover:bg-slate-100">取消</button>
+        <button id="save" class="h-10 px-5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white font-medium">保存</button>
+      </div>
+    </div>
+  `);
+
+  // ---- 测试 OpenRouter / Gemini Vision ----
+  m.root.querySelector('#or-test').onclick = async () => {
+    const status = m.root.querySelector('#or-status');
+    const key = m.root.querySelector('#or-key').value.trim();
+    const model = m.root.querySelector('input[name=or-model]:checked')?.value || 'google/gemini-2.5-flash';
+    if (!key) { status.textContent = '❌ 请先填写 API Key'; status.className = 'text-xs self-center text-red-500'; return; }
+    status.textContent = '⏳ 正在生成测试图片并识别…'; status.className = 'text-xs self-center text-ink-500';
+    try {
+      const testBlob = await makeTestBlob();
+      const base64 = await fileToBase64(testBlob);
+      const dataUrl = `data:image/jpeg;base64,${base64}`;
+      const reply = await callOpenRouter([{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: dataUrl } },
+          { type: 'text', text: '这张测试图片中有 3 个彩色方块（紫/蓝/绿），分别标注为柜子A、柜子B、柜子C。请识别它们的位置，只返回 JSON 数组：[{"name":"柜子名","rect":{"x":0,"y":0,"w":0.5,"h":0.5}}]' }
+        ]
+      }], { model, apiKey: key, maxTokens: 512 });
+      const match = reply.match(/\[[\s\S]*\]/);
+      const boxes = match ? JSON.parse(match[0]) : [];
+      status.textContent = `✅ ${model.split('/').pop()} 识别到 ${boxes.length} 个柜子！${boxes.map(b => b.name).join('、')}`;
+      status.className = 'text-xs self-center text-emerald-600';
+    } catch (e) {
+      status.textContent = `❌ ${e.message.slice(0, 100)}`;
+      status.className = 'text-xs self-center text-red-500';
+    }
+  };
+
+  // ---- 测试 DeepSeek ----
+  m.root.querySelector('#dk-test').onclick = async () => {
+    const status = m.root.querySelector('#dk-status');
+    const key = m.root.querySelector('#dk-key').value.trim();
+    const model = m.root.querySelector('input[name=dk-model]:checked')?.value || 'deepseek-v4-flash';
+    if (!key) { status.textContent = '❌ 请先填写 API Key'; status.className = 'text-xs self-center text-red-500'; return; }
+    status.textContent = '⏳ 测试中…'; status.className = 'text-xs self-center text-ink-500';
+    try {
+      const reply = await callDeepSeek([
+        { role: 'system', content: '你是家居收纳助手。用一句话回复。' },
+        { role: 'user', content: '请用一句话介绍你自己，并确认你是什么模型。' }
+      ], { model, apiKey: key, maxTokens: 100 });
+      status.textContent = `✅ ${reply.slice(0, 80)}`;
+      status.className = 'text-xs self-center text-emerald-600';
+    } catch (e) {
+      status.textContent = `❌ ${e.message.slice(0, 100)}`;
+      status.className = 'text-xs self-center text-red-500';
+    }
+  };
+
+  // ---- 测试 Claude Vision ----
+  m.root.querySelector('#ck-test').onclick = async () => {
+    const status = m.root.querySelector('#ck-status');
+    const key = m.root.querySelector('#ck-key').value.trim();
+    const proxy = m.root.querySelector('#ck-proxy').value.trim();
+    if (!key) { status.textContent = '❌ 请先填写 API Key'; status.className = 'text-xs self-center text-red-500'; return; }
+    status.textContent = '⏳ 正在生成测试图片并识别…'; status.className = 'text-xs self-center text-ink-500';
+    try {
+      const testBlob = await makeTestBlob();
+      const base64 = await fileToBase64(testBlob);
+      const res = await fetch(proxy + ANTHROPIC_API, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 512,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
+              { type: 'text', text: '这张测试图片中有 3 个彩色方块，分别标注为柜子A、柜子B、柜子C。请识别它们的位置，返回 JSON 数组格式：[{"name":"柜子名","rect":{"x":0,"y":0,"w":0.5,"h":0.5}}]' }
+            ]
+          }]
+        })
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`API 返回 ${res.status}: ${err.slice(0, 150)}`);
+      }
+      const data = await res.json();
+      const text = data.content?.[0]?.text || '';
+      const match = text.match(/\[[\s\S]*\]/);
+      const boxes = match ? JSON.parse(match[0]) : [];
+      status.textContent = `✅ Claude 识别到 ${boxes.length} 个柜子！${boxes.map(b => b.name).join('、')}`;
+      status.className = 'text-xs self-center text-emerald-600';
+    } catch (e) {
+      status.textContent = `❌ ${e.message.slice(0, 100)}`;
+      status.className = 'text-xs self-center text-red-500';
+    }
+  };
+
+  // ---- 保存 ----
+  m.root.querySelector('#cancel').onclick = m.close;
+  m.root.querySelector('#save').onclick = async () => {
+    await setConfig('openrouter_api_key', m.root.querySelector('#or-key').value.trim());
+    await setConfig('openrouter_model', m.root.querySelector('input[name=or-model]:checked')?.value || 'google/gemini-2.5-flash');
+    await setConfig('deepseek_api_key', m.root.querySelector('#dk-key').value.trim());
+    await setConfig('deepseek_model', m.root.querySelector('input[name=dk-model]:checked')?.value || 'deepseek-v4-flash');
+    await setConfig('claude_api_key', m.root.querySelector('#ck-key').value.trim());
+    await setConfig('claude_proxy_url', m.root.querySelector('#ck-proxy').value.trim());
+    toast('API 配置已保存');
+    m.close(); render();
+  };
 }
 
 /* ================================================================
@@ -1365,6 +2893,15 @@ document.addEventListener('click', (e) => {
   const btn = e.target.closest('.tab-btn');
   if (btn) go(btn.dataset.route);
 });
+
+// 全局图片加载失败兜底：任何 <img> 解码失败时显示占位图
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (img.tagName === 'IMG' && img.src !== PLACEHOLDER_SVG) {
+    img.onerror = null; // 避免无限循环
+    img.src = PLACEHOLDER_SVG;
+  }
+}, true);
 
 // 从 hash 恢复路由
 try {
