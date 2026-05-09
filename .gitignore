@@ -1,0 +1,17 @@
+# Sensitive / local config
+.claude/
+.env
+.env.*
+*.local
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Generated
+.thumbs/
+node_modules/
+dist/
+build/
