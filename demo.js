@@ -7,6 +7,7 @@ const DEMO_ROOMS = [
   {
     id: 'demo-room-1', name: '客厅', icon: '🛋️', createdAt: Date.now() - 86400000 * 30,
     color: ['#667eea', '#764ba2'],
+    photoUrl: 'https://images.unsplash.com/photo-1586023492125-27b2c045efd7?w=1200&h=900&fit=crop',
     cabinets: [
       {
         id: 'demo-cab-1a', name: '电视柜',
@@ -34,6 +35,7 @@ const DEMO_ROOMS = [
   {
     id: 'demo-room-2', name: '主卧', icon: '🛏️', createdAt: Date.now() - 86400000 * 28,
     color: ['#f093fb', '#f5576c'],
+    photoUrl: 'https://images.unsplash.com/photo-1616594039964-ae9021a400a0?w=1200&h=900&fit=crop',
     cabinets: [
       {
         id: 'demo-cab-2a', name: '衣柜（左侧）',
@@ -73,6 +75,7 @@ const DEMO_ROOMS = [
   {
     id: 'demo-room-3', name: '厨房', icon: '🍳', createdAt: Date.now() - 86400000 * 25,
     color: ['#4facfe', '#00f2fe'],
+    photoUrl: 'https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=1200&h=900&fit=crop',
     cabinets: [
       {
         id: 'demo-cab-3a', name: '吊柜',
@@ -114,6 +117,7 @@ const DEMO_ROOMS = [
   {
     id: 'demo-room-4', name: '书房', icon: '📚', createdAt: Date.now() - 86400000 * 22,
     color: ['#a18cd1', '#fbc2eb'],
+    photoUrl: 'https://images.unsplash.com/photo-1507842217343-583bb7270b66?w=1200&h=900&fit=crop',
     cabinets: [
       {
         id: 'demo-cab-4a', name: '左侧书柜',
@@ -154,6 +158,7 @@ const DEMO_ROOMS = [
   {
     id: 'demo-room-5', name: '儿童房', icon: '🧸', createdAt: Date.now() - 86400000 * 20,
     color: ['#ffecd2', '#fcb69f'],
+    photoUrl: 'https://images.unsplash.com/photo-1519710164239-da123dc03ef4?w=1200&h=900&fit=crop',
     cabinets: [
       {
         id: 'demo-cab-5a', name: '玩具柜',
@@ -182,6 +187,7 @@ const DEMO_ROOMS = [
   {
     id: 'demo-room-6', name: '卫生间', icon: '🚿', createdAt: Date.now() - 86400000 * 18,
     color: ['#89f7fe', '#66a6ff'],
+    photoUrl: 'https://images.unsplash.com/photo-1552321554-5fefe8c9ef14?w=1200&h=900&fit=crop',
     cabinets: [
       {
         id: 'demo-cab-6a', name: '镜柜',
@@ -212,6 +218,7 @@ const DEMO_ROOMS = [
   {
     id: 'demo-room-7', name: '阳台', icon: '🧺', createdAt: Date.now() - 86400000 * 15,
     color: ['#a1c4fd', '#c2e9fb'],
+    photoUrl: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=1200&h=900&fit=crop',
     cabinets: [
       {
         id: 'demo-cab-7a', name: '洗衣柜',
@@ -240,27 +247,59 @@ const DEMO_ROOMS = [
   },
 ];
 
-/* 生成占位照片（canvas 绘制渐变背景 + 房间名称 + 柜子框） */
-function generateDemoPhoto(room, cabinets) {
+/* 物品 emoji 映射表 */
+const ITEM_EMOJIS = {
+  '遥控器': '🔌', '充电线': '🔌', '相框': '🖼️', '收纳盒': '📦', '扑克牌': '🃏',
+  '台灯': '💡', '杂志': '📰', '纸巾盒': '🧻', '指甲剪套装': '💅',
+  '羽绒服': '🧥', '西装': '🤵', '毛衣': '🧶', '牛仔裤': '👖', '围巾': '🧣', '行李箱': '🧳',
+  'T恤': '👕', '运动服': '🏃', '袜子': '🧦', '内衣': '👙', '睡衣': '👚',
+  '充电宝': '🔋', '眼罩': '😴', 'Kindle': '📖', '水杯': '🥤',
+  '碗': '🍜', '盘子': '🍽️', '杯子': '☕', '保温壶': '🫖', '干货': '🍄',
+  '炒锅': '🍳', '汤锅': '🫕', '砧板': '🪵', '刀具套装': '🔪', '调味料': '🧂', '食用油': '🫒',
+  '鸡蛋': '🥚', '牛奶': '🥛', '酸奶': '🥤', '豆腐': '🧊', '水果': '🍎', '剩菜': '🍖',
+  '设计模式': '📘', '深入理解计算机系统': '📕', 'JavaScript 高级程序设计': '📗',
+  '人类简史': '📙', '百年孤独': '📓', '活着': '📔',
+  '文件夹': '📁', '笔记本': '📝', '打印机墨盒': '🖨️', '移动硬盘': '💾', '计算器': '🧮',
+  '签字笔': '🖊️', '便签纸': '📌', 'U盘': '💽', '尺子': '📏', '胶带': '🎞️',
+  '乐高': '🧱', '毛绒玩具': '🧸', '拼图': '🧩', '画笔套装': '🎨', '绘本': '📚',
+  '校服': '👔', '外套': '🧥', '裤子': '👖', '鞋子': '👟', '书包': '🎒',
+  '牙膏': '🪥', '牙刷': '🪥', '洗面奶': '🧴', '护肤品': '🧴', '剃须刀': '🪒', '隐形眼镜': '👓',
+  '洗发水': '🧴', '沐浴露': '🧴', '毛巾': '🧖', '吹风机': '💨', '洗衣液': '🧴', '卫生纸': '🧻',
+  '洗衣液': '🧴', '柔顺剂': '🧴', '晾衣架': '👕', '夹子': '📎', '熨斗': '👔',
+  '工具箱': '🧰', '吸尘器': '🧹', '花盆': '🪴', '肥料': '🌱', '圣诞灯': '🎄', '旧杂志': '📰',
+};
+
+/* 从 Unsplash 获取真实房间照片，失败时降级为 canvas 占位图 */
+async function fetchDemoPhoto(room) {
+  // 尝试从 Unsplash 获取真实照片
+  if (room.photoUrl) {
+    try {
+      const res = await fetch(room.photoUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.size > 1000 && blob.type.startsWith('image/')) {
+          const bmp = await createImageBitmap(blob);
+          const result = { blob, width: bmp.width, height: bmp.height };
+          bmp.close();
+          return result;
+        }
+      }
+    } catch {}
+  }
+  // 降级：canvas 生成占位图
   const w = 1200, h = 900;
   const canvas = document.createElement('canvas');
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d');
-
-  // 渐变背景
   const grad = ctx.createLinearGradient(0, 0, w, h);
   grad.addColorStop(0, room.color[0]);
   grad.addColorStop(1, room.color[1]);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
-
-  // 网格纹理
   ctx.strokeStyle = 'rgba(255,255,255,0.08)';
   ctx.lineWidth = 1;
   for (let x = 0; x < w; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
   for (let y = 0; y < h; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
-
-  // 房间名称
   ctx.fillStyle = 'rgba(255,255,255,0.9)';
   ctx.font = 'bold 48px -apple-system, "PingFang SC", sans-serif';
   ctx.textAlign = 'center';
@@ -268,9 +307,7 @@ function generateDemoPhoto(room, cabinets) {
   ctx.font = '20px -apple-system, "PingFang SC", sans-serif';
   ctx.fillStyle = 'rgba(255,255,255,0.6)';
   ctx.fillText('示例照片 — 点击柜子查看物品', w / 2, h / 2 + 30);
-
-  // 柜子框
-  for (const cab of cabinets) {
+  for (const cab of room.cabinets) {
     const r = cab.rect;
     const cx = r.x * w, cy = r.y * h, cw = r.w * w, ch = r.h * h;
     ctx.strokeStyle = 'rgba(255,255,255,0.7)';
@@ -280,37 +317,35 @@ function generateDemoPhoto(room, cabinets) {
     ctx.setLineDash([]);
     ctx.fillStyle = 'rgba(255,255,255,0.15)';
     ctx.fillRect(cx, cy, cw, ch);
-    // 柜子名称
     ctx.fillStyle = 'rgba(255,255,255,0.9)';
     ctx.font = 'bold 16px -apple-system, "PingFang SC", sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(cab.name, cx + cw / 2, cy + ch / 2 + 6);
   }
-
-  return new Promise(resolve => {
-    canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.85);
-  });
+  const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+  return { blob, width: w, height: h };
 }
 
 /* 主函数：向 IndexedDB 填充示例数据 */
 async function loadDemoData() {
+  // 已有数据或用户主动清空过则不自动加载
+  if (localStorage.getItem('hi-demo-cleared')) return false;
   const existing = await db.all('rooms');
-  if (existing.length > 0) return false; // 已有数据，不重复填充
+  if (existing.length > 0) return false;
 
   toast('正在加载示例数据…');
 
   for (const room of DEMO_ROOMS) {
-    // 写入房间
     await db.add('rooms', {
       id: room.id, name: room.name, icon: room.icon, createdAt: room.createdAt,
     });
 
-    // 生成占位照片
-    const photoBlob = await generateDemoPhoto(room, room.cabinets);
+    // 获取照片（优先 Unsplash 真实图片）
+    const { blob: photoBlob, width, height } = await fetchDemoPhoto(room);
     const photoId = `demo-photo-${room.id}`;
     await db.add('photos', {
       id: photoId, roomId: room.id, blob: photoBlob,
-      width: 1200, height: 900, createdAt: room.createdAt + 1000,
+      width, height, createdAt: room.createdAt + 1000,
     });
 
     // 写入柜子和物品
@@ -320,12 +355,14 @@ async function loadDemoData() {
         name: cab.name, rect: cab.rect, createdAt: room.createdAt + 2000,
       });
       for (const item of cab.items) {
+        const emoji = ITEM_EMOJIS[item.name] || '📦';
+        const image = await generateItemThumb(item.name, emoji);
         await db.add('items', {
           id: `demo-item-${cab.id}-${item.name}`.replace(/\s+/g, ''),
           cabinetId: cab.id, roomId: room.id,
           name: item.name, qty: item.qty || 1,
           note: item.note || '', tags: item.tags || [],
-          createdAt: room.createdAt + 3000,
+          image, createdAt: room.createdAt + 3000,
         });
       }
     }

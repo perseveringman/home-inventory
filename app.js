@@ -9,8 +9,8 @@
 
 /* ---------- 极简 IndexedDB 封装 ---------- */
 const DB_NAME = 'home-inventory';
-const DB_VERSION = 1;
-const STORES = ['rooms', 'photos', 'cabinets', 'items'];
+const DB_VERSION = 2;
+const STORES = ['rooms', 'photos', 'cabinets', 'items', 'config'];
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -68,12 +68,99 @@ const db = {
   }),
   clearAll: async () => {
     const d = await openDB();
-    await Promise.all(STORES.map(n => new Promise((res, rej) => {
+    const toClear = STORES.filter(n => n !== 'config'); // 保留 API Key 等配置
+    await Promise.all(toClear.map(n => new Promise((res, rej) => {
       const r = d.transaction(n, 'readwrite').objectStore(n).clear();
       r.onsuccess = res; r.onerror = () => rej(r.error);
     })));
   }
 };
+
+/* ---------- 配置存储（API Key 等） ---------- */
+async function getConfig(key, fallback = '') {
+  try { const r = await db.get('config', key); return r ? r.value : fallback; }
+  catch { return fallback; }
+}
+async function setConfig(key, value) {
+  await db.put('config', { id: key, value });
+}
+
+/* ---------- Claude Vision 柜子识别 ---------- */
+const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
+
+async function fileToBase64(blob) {
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+async function detectCabinetsWithClaude(blob, { width, height }) {
+  const apiKey = await getConfig('claude_api_key');
+  if (!apiKey) throw new Error('请先在设置页填入 Claude API Key');
+
+  const maxSide = 1568;
+  let imgBlob = blob;
+  if (Math.max(width, height) > maxSide) {
+    const ratio = maxSide / Math.max(width, height);
+    const nw = Math.round(width * ratio), nh = Math.round(height * ratio);
+    const bmp = await createImageBitmap(blob);
+    const c = document.createElement('canvas');
+    c.width = nw; c.height = nh;
+    c.getContext('2d').drawImage(bmp, 0, 0, nw, nh);
+    imgBlob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+    bmp.close();
+  }
+
+  const base64 = await fileToBase64(imgBlob);
+  const proxy = await getConfig('claude_proxy_url', '');
+
+  const res = await fetch(proxy + ANTHROPIC_API, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
+          { type: 'text', text: `在这张房间照片中，识别出所有柜子、架子、储物家具的位置。
+对每个识别出的柜子，返回它的归一化边界框坐标 [x, y, w, h]（0~1浮点数，原点在左上角）。
+只返回 JSON 数组，不要其他文字，格式如下：
+[{"name": "柜子名称", "rect": {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}}]
+如果识别不到任何柜子，返回空数组 []。` }
+        ]
+      }]
+    })
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`API 调用失败 (${res.status}): ${err.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const text = data.content?.[0]?.text || '[]';
+  const match = text.match(/\[[\s\S]*\]/);
+  if (!match) throw new Error('AI 返回格式异常');
+
+  return JSON.parse(match[0]).map(b => ({
+    name: b.name || '柜子',
+    rect: {
+      x: Math.max(0, Math.min(0.95, +b.rect.x || 0)),
+      y: Math.max(0, Math.min(0.95, +b.rect.y || 0)),
+      w: Math.max(0.03, Math.min(1, +b.rect.w || 0.1)),
+      h: Math.max(0.03, Math.min(1, +b.rect.h || 0.1)),
+    }
+  }));
+}
 
 /* ---------- 工具 ---------- */
 const uid = () => 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -110,13 +197,74 @@ async function compressImage(file, maxSide = 1600, quality = 0.82) {
   return { blob, width, height };
 }
 
-/* ---------- AI 识别接口（可替换） ----------
- * 当前占位实现：基于图片比例给出 2~3 个候选框，用户再手动微调。
- * 接入真 API 时，只需让 detectCabinets(blob) 返回 [{name, rect:{x,y,w,h}}]，x/y/w/h 为 0~1 归一化。
+/* ---------- 物品缩略图生成 ---------- */
+// 根据 emoji/名称生成颜色
+function nameToHue(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
+  return Math.abs(h) % 360;
+}
+
+// 为物品生成缩略图 blob（彩色背景 + emoji + 名称）
+async function generateItemThumb(name, emoji = '') {
+  const S = 160;
+  const canvas = document.createElement('canvas');
+  canvas.width = S; canvas.height = S;
+  const ctx = canvas.getContext('2d');
+  const hue = nameToHue(name);
+  // 渐变背景
+  const grad = ctx.createLinearGradient(0, 0, S, S);
+  grad.addColorStop(0, `hsl(${hue}, 65%, 88%)`);
+  grad.addColorStop(1, `hsl(${(hue + 30) % 360}, 55%, 78%)`);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(0, 0, S, S, 20);
+  ctx.fill();
+  // emoji
+  if (emoji) {
+    ctx.font = '48px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(emoji, S / 2, S / 2 - 14);
+  }
+  // 名称
+  ctx.font = 'bold 13px -apple-system, "PingFang SC", sans-serif';
+  ctx.fillStyle = '#1e293b';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  const label = name.length > 5 ? name.slice(0, 5) + '…' : name;
+  ctx.fillText(label, S / 2, S - 14);
+  return new Promise(r => canvas.toBlob(r, 'image/png'));
+}
+
+// 通用灰色占位图
+function placeholderBlob() {
+  const S = 160;
+  const canvas = document.createElement('canvas');
+  canvas.width = S; canvas.height = S;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#e2e8f0';
+  ctx.beginPath();
+  ctx.roundRect(0, 0, S, S, 20);
+  ctx.fill();
+  ctx.font = '40px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('📦', S / 2, S / 2);
+  return new Promise(r => canvas.toBlob(r, 'image/png'));
+}
+
+/* ---------- AI 识别接口 ----------
+ * 有 Claude API Key 时调用 Claude Vision 真实识别；
+ * 无 Key 时使用启发式占位。
  */
 async function detectCabinets(blob, { width, height }) {
-  await new Promise(r => setTimeout(r, 600)); // 假装在识别
-  // 启发式：把图片左中右各给一个候选框，用户可删除或调整
+  const apiKey = await getConfig('claude_api_key');
+  if (apiKey) {
+    return await detectCabinetsWithClaude(blob, { width, height });
+  }
+  // 无 API Key 时的启发式占位
+  await new Promise(r => setTimeout(r, 600));
   const ratio = width / height;
   const boxes = [];
   if (ratio > 1.1) {
@@ -529,13 +677,20 @@ async function renderPhotoDetail(app, photoId) {
       const items = allItems.filter(i => i.cabinetId === c.id);
       return `
         <button class="cab-row text-left bg-slate-50 hover:bg-brand-50 rounded-xl p-3 transition" data-id="${c.id}">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between mb-2">
             <span class="font-medium text-sm text-ink-900">🗄️ ${esc(c.name)}</span>
             <span class="chip">${items.length} 件</span>
           </div>
           ${items.length > 0 ? `
-            <p class="text-xs text-ink-500 mt-1 truncate">${items.slice(0,5).map(i => esc(i.name)).join(' · ')}${items.length > 5 ? ' …' : ''}</p>
-          ` : `<p class="text-xs text-ink-500 mt-1">点击添加物品</p>`}
+            <div class="flex gap-1.5 overflow-hidden">
+              ${items.slice(0, 8).map(it => `
+                <div class="flex-shrink-0 w-10 h-10 rounded-lg overflow-hidden bg-white shadow-sm">
+                  ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-lg">📦</div>`}
+                </div>
+              `).join('')}
+              ${items.length > 8 ? `<div class="flex-shrink-0 w-10 h-10 rounded-lg bg-slate-200 flex items-center justify-center text-xs text-ink-500">+${items.length - 8}</div>` : ''}
+            </div>
+          ` : `<p class="text-xs text-ink-500">点击添加物品</p>`}
         </button>
       `;
     }).join('');
@@ -566,7 +721,8 @@ async function renderPhotoDetail(app, photoId) {
   /* ----- AI 识别 ----- */
   const runDetect = async () => {
     const hint = $('#hint');
-    hint.textContent = '✨ AI 正在识别柜子…';
+    const hasKey = await getConfig('claude_api_key');
+    hint.textContent = hasKey ? '✨ Claude Vision 正在识别柜子…' : '✨ 正在识别柜子（启发式模式，设置页可配置 API Key）…';
     try {
       const detected = await detectCabinets(photo.blob, { width: photo.width, height: photo.height });
       for (const d of detected) {
@@ -661,28 +817,42 @@ async function renderPhotoDetail(app, photoId) {
         </div>
 
         <h4 class="text-xs font-semibold text-ink-500 mb-2">物品清单（${items.length}）</h4>
-        <div id="item-list" class="space-y-2 max-h-64 overflow-y-auto mb-3">
-          ${items.length === 0 ? `<p class="text-sm text-ink-500 text-center py-4">还没有物品，在下方添加</p>` : items.map(it => `
-            <div class="flex items-center gap-2 bg-slate-50 rounded-xl p-2.5" data-iid="${it.id}">
-              <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium truncate">${esc(it.name)}${it.qty > 1 ? ` <span class="text-ink-500 text-xs">×${it.qty}</span>` : ''}</div>
-                ${it.note ? `<div class="text-xs text-ink-500 truncate">${esc(it.note)}</div>` : ''}
+        <div id="item-list" class="grid grid-cols-5 gap-2 max-h-72 overflow-y-auto mb-3">
+          ${items.length === 0 ? `<p class="text-sm text-ink-500 text-center py-6 col-span-full">还没有物品，在下方添加</p>` : items.map(it => `
+            <div class="relative group cursor-pointer" data-iid="${it.id}">
+              <div class="aspect-square rounded-xl overflow-hidden bg-slate-100 shadow-sm">
+                ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-3xl">📦</div>`}
               </div>
-              <button class="del-item w-8 h-8 rounded-lg hover:bg-red-50 text-red-500" title="删除">
-                <svg class="mx-auto" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              <div class="mt-1 text-center">
+                <div class="text-xs font-medium truncate leading-tight">${esc(it.name)}</div>
+                ${it.qty > 1 ? `<div class="text-xs text-ink-500">×${it.qty}</div>` : ''}
+              </div>
+              <button class="del-item absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow" title="删除">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
               </button>
             </div>
           `).join('')}
         </div>
 
-        <form id="add-item-form" class="flex gap-2 items-center bg-brand-50 rounded-xl p-2">
-          <input id="in" type="text" placeholder="物品名称，例如：吸尘器"
-            class="flex-1 h-10 px-3 rounded-lg bg-white border border-transparent focus:border-brand-500 outline-none text-sm"/>
-          <input id="iq" type="number" min="1" value="1" class="w-16 h-10 px-2 rounded-lg bg-white border border-transparent focus:border-brand-500 outline-none text-sm text-center"/>
-          <button type="submit" class="h-10 px-4 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium">加入</button>
+        <form id="add-item-form" class="space-y-2 bg-brand-50 rounded-xl p-3">
+          <div class="flex gap-2 items-center">
+            <input id="in" type="text" placeholder="物品名称，例如：吸尘器"
+              class="flex-1 h-10 px-3 rounded-lg bg-white border border-transparent focus:border-brand-500 outline-none text-sm"/>
+            <input id="iq" type="number" min="1" value="1" class="w-16 h-10 px-2 rounded-lg bg-white border border-transparent focus:border-brand-500 outline-none text-sm text-center"/>
+          </div>
+          <input id="inote" type="text" placeholder="备注（可选，例如：第二层抽屉）"
+            class="w-full h-10 px-3 rounded-lg bg-white border border-transparent focus:border-brand-500 outline-none text-sm"/>
+          <div class="flex gap-2 items-center">
+            <label class="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-white border border-slate-200 hover:border-brand-500 text-xs text-ink-700 cursor-pointer">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="13" r="4" stroke="currentColor" stroke-width="2"/></svg>
+              拍照
+              <input id="iphoto" type="file" accept="image/*" capture="environment" class="hidden"/>
+            </label>
+            <span id="iphoto-label" class="text-xs text-ink-500"></span>
+            <div class="flex-1"></div>
+            <button type="submit" class="h-9 px-4 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium">加入</button>
+          </div>
         </form>
-        <input id="inote" type="text" placeholder="备注（可选，例如：第二层抽屉）"
-          class="mt-2 w-full h-10 px-3 rounded-xl bg-slate-50 border border-transparent focus:border-brand-500 focus:bg-white outline-none text-sm"/>
 
         <div class="flex justify-end gap-2 mt-5">
           <button id="close" class="h-10 px-5 rounded-xl text-ink-700 font-medium hover:bg-slate-100">完成</button>
@@ -704,16 +874,26 @@ async function renderPhotoDetail(app, photoId) {
       toast('已重命名');
     });
 
+    let itemPhoto = null;
+    m.root.querySelector('#iphoto')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0]; if (!file) return;
+      const { blob } = await compressImage(file, 400, 0.8);
+      itemPhoto = blob;
+      m.root.querySelector('#iphoto-label').textContent = '已选照片';
+    });
+
     m.root.querySelector('#add-item-form').onsubmit = async (e) => {
       e.preventDefault();
       const name = m.root.querySelector('#in').value.trim();
       if (!name) { toast('请填物品名'); return; }
       const qty = parseInt(m.root.querySelector('#iq').value) || 1;
       const note = m.root.querySelector('#inote').value.trim();
+      const image = itemPhoto || await generateItemThumb(name);
       await db.add('items', {
         id: uid(), cabinetId: cab.id, roomId: cab.roomId,
-        name, qty, note, tags: [], createdAt: Date.now()
+        name, qty, note, tags: [], image, createdAt: Date.now()
       });
+      itemPhoto = null;
       toast('已添加');
       refresh();
     };
@@ -797,11 +977,15 @@ async function renderItems(app) {
                     <span class="text-sm font-medium">🗄️ ${esc(ci.cabinet.name)}</span>
                     <span class="chip">${ci.items.length}</span>
                   </button>
-                  <div class="flex flex-wrap gap-1.5 pl-12">
+                  <div class="grid grid-cols-5 gap-2 pl-12">
                     ${ci.items.map(it => `
-                      <span class="inline-flex items-center gap-1 bg-slate-100 rounded-lg px-2 py-1 text-xs">
-                        ${esc(it.name)}${it.qty > 1 ? `<span class="text-ink-500">×${it.qty}</span>` : ''}
-                      </span>
+                      <div class="text-center">
+                        <div class="aspect-square rounded-xl overflow-hidden bg-slate-100 shadow-sm">
+                          ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-2xl">📦</div>`}
+                        </div>
+                        <div class="mt-0.5 text-xs font-medium truncate leading-tight">${esc(it.name)}</div>
+                        ${it.qty > 1 ? `<div class="text-xs text-ink-500">×${it.qty}</div>` : ''}
+                      </div>
                     `).join('')}
                   </div>
                 </div>
@@ -858,10 +1042,11 @@ async function renderSearch(app) {
     res.innerHTML = matched.map(it => {
       const cab = cabMap[it.cabinetId];
       const room = cab ? roomMap[cab.roomId] : null;
-      const photo = cab ? photos.find(p => p.id === cab.photoId) : null;
       return `
         <button class="result w-full bg-white rounded-xl shadow-soft hover:shadow-lg transition p-3 flex items-center gap-3 text-left" data-photo="${cab?.photoId || ''}">
-          ${photo ? `<img src="${blobURL(photo.blob, photo.id)}" class="w-14 h-14 rounded-lg object-cover"/>` : `<div class="w-14 h-14 rounded-lg bg-slate-100 flex items-center justify-center text-xl">📦</div>`}
+          <div class="w-14 h-14 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0">
+            ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-2xl">📦</div>`}
+          </div>
           <div class="flex-1 min-w-0">
             <div class="font-medium text-sm text-ink-900 truncate">${esc(it.name)}${it.qty > 1 ? ` <span class="text-ink-500 text-xs">×${it.qty}</span>` : ''}</div>
             <div class="text-xs text-ink-500 truncate">
@@ -1041,6 +1226,8 @@ async function renderSettings(app) {
   const lastSync = SyncState.lastSyncedAt
     ? new Date(SyncState.lastSyncedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : '从未同步';
+  const claudeKey = await getConfig('claude_api_key');
+  const proxyUrl = await getConfig('claude_proxy_url');
 
   app.innerHTML = `
     ${header({ title: '设置' })}
@@ -1089,6 +1276,7 @@ async function renderSettings(app) {
             <input id="zipimport" type="file" accept=".zip,application/zip" class="hidden"/>
           </label>
           ${supported ? `<button id="folderimport" class="h-10 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-sm font-medium">从文件夹导入</button>` : ''}
+          <button id="loaddemo" class="h-10 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-sm font-medium">加载示例数据</button>
           <button id="reset" class="h-10 px-4 rounded-xl text-red-600 hover:bg-red-50 text-sm font-medium ml-auto">清空所有数据</button>
         </div>
       </section>
@@ -1105,8 +1293,19 @@ async function renderSettings(app) {
       </section>
 
       <section class="bg-white rounded-2xl shadow-soft p-4">
-        <h3 class="text-sm font-semibold mb-3">🤖 AI 柜子识别</h3>
-        <p class="text-xs text-ink-500">当前使用启发式占位算法（给出 2~3 个候选框）。接入真实视觉模型（GPT-4V / Claude Vision）只需改 <code class="bg-slate-100 px-1.5 py-0.5 rounded">app.js</code> 中的 <code class="bg-slate-100 px-1.5 py-0.5 rounded">detectCabinets()</code>。</p>
+        <h3 class="text-sm font-semibold mb-3">🤖 AI 柜子识别（Claude Vision）</h3>
+        <p class="text-xs text-ink-500 mb-3">填入 Anthropic API Key 后，在照片详情页点「AI 识别」即可用 Claude Vision 自动识别柜子位置。</p>
+        <label class="block text-xs text-ink-500 mb-1">API Key</label>
+        <input id="apikey" type="password" value="${esc(claudeKey)}" placeholder="sk-ant-api03-..."
+          class="w-full h-10 px-3 rounded-xl border border-slate-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none text-sm font-mono"/>
+        <label class="block text-xs text-ink-500 mb-1 mt-3">代理 URL（可选，解决 CORS 问题）</label>
+        <input id="proxyurl" type="text" value="${esc(proxyUrl)}" placeholder="https://your-cors-proxy.com/"
+          class="w-full h-10 px-3 rounded-xl border border-slate-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-100 outline-none text-sm font-mono"/>
+        <div class="flex gap-2 mt-3">
+          <button id="savekey" class="h-10 px-4 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium">保存</button>
+          ${claudeKey ? `<span class="chip" style="background:#dcfce7;color:#166534">已配置</span>` : `<span class="chip" style="background:#fef3c7;color:#92400e">未配置</span>`}
+        </div>
+        <p class="text-xs text-ink-500 mt-2">如遇 CORS 错误，可填入代理 URL（如 Cloudflare Worker 或本地代理）。</p>
       </section>
 
       <section class="bg-white rounded-2xl shadow-soft p-4">
@@ -1136,10 +1335,25 @@ async function renderSettings(app) {
     if (!confirm('确认清空所有房间、照片和物品？此操作不可恢复。')) return;
     if (!confirm('再确认一次：真的清空？')) return;
     await db.clearAll();
+    localStorage.setItem('hi-demo-cleared', 'true');
     urlCache.forEach(u => URL.revokeObjectURL(u));
     urlCache.clear();
     toast('已清空');
     go('rooms');
+  });
+  $('#savekey')?.addEventListener('click', async () => {
+    const key = $('#apikey').value.trim();
+    const proxy = $('#proxyurl').value.trim();
+    await setConfig('claude_api_key', key);
+    await setConfig('claude_proxy_url', proxy);
+    toast(key ? 'API Key 已保存' : 'API Key 已清除');
+    render();
+  });
+  $('#loaddemo')?.addEventListener('click', async () => {
+    localStorage.removeItem('hi-demo-cleared');
+    const loaded = await loadDemoData();
+    if (!loaded) toast('已有示例数据，无需重复加载');
+    render();
   });
 }
 
