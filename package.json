@@ -1,0 +1,17 @@
+{
+  "name": "home-inventory",
+  "version": "2.0.0",
+  "private": true,
+  "description": "家居收纳 · 物品档案（monorepo：core + web）",
+  "scripts": {
+    "dev": "pnpm --filter @home-inventory/web dev",
+    "build": "pnpm --filter @home-inventory/web build",
+    "preview": "pnpm --filter @home-inventory/web preview",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

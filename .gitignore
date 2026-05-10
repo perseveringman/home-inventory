@@ -1,20 +1,9 @@
-# Sensitive / local config
-.claude/
-.env
-.env.*
-*.local
-
-# Editor / OS
+node_modules
+dist
 .DS_Store
-.vscode/
-.idea/
-*.swp
-
-# Generated
-.thumbs/
-node_modules/
-dist/
-build/
-
-# Vercel
-.vercel
+*.log
+.env
+.env.local
+.vite
+coverage
+.turbo
