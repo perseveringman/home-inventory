@@ -223,12 +223,17 @@
       background: linear-gradient(135deg, #38bdf8 0%, #0284c7 100%);
       box-shadow: 0 6px 20px rgba(2,132,199,0.45), 0 2px 6px rgba(0,0,0,0.15);
     }
+    .fab-scan.quick {
+      background: linear-gradient(135deg, #34d399 0%, #059669 100%);
+      box-shadow: 0 6px 20px rgba(5,150,105,0.45), 0 2px 6px rgba(0,0,0,0.15);
+    }
     .fab-scan:hover { transform: scale(1.06); }
     .fab-scan:active { transform: scale(0.95); }
     .fab-scan input { display: none; }
-    /* 自下而上：💬(88) → 🖼️(152) → 📷(216) */
-    #__fab-scan-pick { bottom: 152px; }
-    #__fab-scan-cam  { bottom: 216px; }
+    /* 自下而上：💬(88) → ✏️(152) → 🖼️(216) → 📷(280) */
+    #__fab-quick-add { bottom: 152px; }
+    #__fab-scan-pick { bottom: 216px; }
+    #__fab-scan-cam  { bottom: 280px; }
     .fab-scan .scan-spinner {
       width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.4);
       border-top-color: #fff; border-radius: 50%;
@@ -237,8 +242,9 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     @media (min-width: 768px) {
       .fab-scan { right: 24px; width: 56px; height: 56px; }
-      #__fab-scan-pick { bottom: 164px; }
-      #__fab-scan-cam  { bottom: 232px; }
+      #__fab-quick-add { bottom: 164px; }
+      #__fab-scan-pick { bottom: 232px; }
+      #__fab-scan-cam  { bottom: 300px; }
     }
   </style>
 </head>
@@ -285,6 +291,10 @@
     <span class="__fab-scan-icon">🖼️</span>
     <input class="__fab-scan-input" type="file" accept="image/*"/>
   </label>
+  <!-- 快速文字录入物品 -->
+  <button class="fab-scan quick" id="__fab-quick-add" title="快速输入文字添加物品（支持每行一件）">
+    ✏️
+  </button>
 
   <script src="./storage.js"></script>
   <script src="./demo.js"></script>

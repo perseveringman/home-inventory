@@ -552,6 +552,11 @@ function bindGlobalFabs() {
       });
     }
   });
+  const quick = document.getElementById('__fab-quick-add');
+  if (quick && !quick.dataset.bound) {
+    quick.dataset.bound = '1';
+    quick.addEventListener('click', () => openQuickAddDialog().catch(e => toast('打开失败：' + e.message)));
+  }
 }
 document.addEventListener('DOMContentLoaded', bindGlobalFabs);
 if (document.readyState !== 'loading') bindGlobalFabs();
@@ -644,6 +649,143 @@ async function runQuickItemScan(file) {
     setBusy(false);
     throw e;
   }
+}
+
+/* 快速文字录入物品：弹窗输入多行 → 选择目的地 → 批量入库
+ * 输入语法（每行一件）：
+ *   名称
+ *   名称×数量
+ *   名称 x 数量
+ *   名称, 备注
+ *   名称×2, 备注
+ */
+async function openQuickAddDialog() {
+  const [rooms, cabinets] = await Promise.all([db.all('rooms'), db.all('cabinets')]);
+
+  // 推断默认房间：当前在 room/photo 页时优先
+  const route = state.route || {};
+  let defaultRoomId = '__global__';
+  if (route.name === 'room' && route.id) defaultRoomId = route.id;
+  else if (route.name === 'photo' && route.id) {
+    const p = await db.get('photos', route.id);
+    if (p) defaultRoomId = p.roomId;
+  }
+
+  const m = modal(`
+    <div class="p-5 space-y-4">
+      <div>
+        <h3 class="text-base font-semibold text-ink-900">✏️ 快速添加物品</h3>
+        <p class="text-xs text-ink-500 mt-1">每行一件，支持 <code class="text-brand-600">名称×数量, 备注</code> 语法</p>
+      </div>
+
+      <div>
+        <label class="text-xs font-medium text-ink-500">物品列表</label>
+        <textarea id="qa-list" rows="6" placeholder="牙膏×2&#10;洗发水&#10;螺丝刀, 工具盒里&#10;感冒药×3"
+          class="w-full mt-1 p-3 rounded-xl bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm font-mono"></textarea>
+      </div>
+
+      <div class="bg-brand-50 rounded-xl p-3 space-y-2">
+        <div class="text-xs font-semibold text-brand-700">放到哪里</div>
+        <div class="flex gap-2">
+          <select id="qa-room" class="flex-1 h-10 px-3 rounded-lg bg-white border border-slate-200 text-sm">
+            ${rooms.map(r => `<option value="${r.id}" ${r.id === defaultRoomId ? 'selected' : ''}>${r.icon || '🏠'} ${esc(r.name)}</option>`).join('')}
+            <option value="__global__" ${defaultRoomId === '__global__' ? 'selected' : ''}>📦 全屋自由区</option>
+          </select>
+          <select id="qa-cab" class="flex-1 h-10 px-3 rounded-lg bg-white border border-slate-200 text-sm"></select>
+        </div>
+      </div>
+
+      <div>
+        <label class="text-xs font-medium text-ink-500">⏰ 统一保质期 <span class="text-ink-400 font-normal">（可选，会应用到本次所有物品）</span></label>
+        <input id="qa-expiry" type="date" class="w-full mt-1 h-9 px-3 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm"/>
+      </div>
+
+      <div class="flex justify-end gap-2 pt-2 border-t border-slate-100">
+        <button id="qa-cancel" class="h-9 px-4 rounded-lg bg-slate-100 hover:bg-slate-200 text-sm">取消</button>
+        <button id="qa-save" class="h-9 px-5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium shadow-soft">添加</button>
+      </div>
+    </div>
+  `);
+
+  const roomSel = m.root.querySelector('#qa-room');
+  const cabSel = m.root.querySelector('#qa-cab');
+
+  const refreshCabOptions = async () => {
+    const rid = roomSel.value;
+    let html = '';
+    if (rid === '__global__') {
+      await ensureGlobalLooseCabinet();
+      html = `<option value="__global_loose__">📦 全屋自由区</option>`;
+    } else {
+      const cabs = cabinets.filter(c => c.roomId === rid && (c.type === 'normal' || !c.type));
+      cabs.sort((a, b) => a.name.localeCompare(b.name));
+      html = cabs.map(c => `<option value="${c.id}">🗄️ ${esc(c.name)}</option>`).join('')
+           + `<option value="__room_loose__">📥 此房间的自由区</option>`;
+    }
+    cabSel.innerHTML = html;
+  };
+  roomSel.addEventListener('change', refreshCabOptions);
+  await refreshCabOptions();
+
+  m.root.querySelector('#qa-cancel').onclick = () => m.close();
+
+  m.root.querySelector('#qa-save').onclick = async () => {
+    const raw = m.root.querySelector('#qa-list').value || '';
+    const lines = raw.split('\n').map(s => s.trim()).filter(Boolean);
+    if (lines.length === 0) { toast('请先输入物品'); return; }
+
+    const rid = roomSel.value;
+    const cabChoice = cabSel.value;
+    let targetCab;
+    if (cabChoice === '__global_loose__') targetCab = await ensureGlobalLooseCabinet();
+    else if (cabChoice === '__room_loose__') targetCab = await ensureLooseCabinet(rid);
+    else targetCab = cabinets.find(c => c.id === cabChoice);
+    if (!targetCab) { toast('请选择目的地'); return; }
+
+    const expiry = m.root.querySelector('#qa-expiry').value || '';
+
+    // 解析每一行：名称[×|x|*]数量, 备注
+    const parseLine = (line) => {
+      let name = line, qty = 1, note = '';
+      // 拆备注（中英文逗号）
+      const commaIdx = line.search(/[,，]/);
+      if (commaIdx >= 0) {
+        name = line.slice(0, commaIdx).trim();
+        note = line.slice(commaIdx + 1).trim();
+      }
+      // 拆数量（×、x、X、*）
+      const qtyMatch = name.match(/^(.+?)\s*[×xX*]\s*(\d+)\s*$/);
+      if (qtyMatch) {
+        name = qtyMatch[1].trim();
+        qty = parseInt(qtyMatch[2]) || 1;
+      }
+      return { name, qty, note };
+    };
+
+    let added = 0;
+    for (const line of lines) {
+      const { name, qty, note } = parseLine(line);
+      if (!name) continue;
+      const image = await generateItemThumb(name);
+      await db.add('items', {
+        id: uid(),
+        cabinetId: targetCab.id,
+        roomId: targetCab.roomId === '__global__' ? '__global__' : targetCab.roomId,
+        name, qty, note, tags: [],
+        image,
+        expiry,
+        status: 'placed',
+        source: 'manual',
+        createdAt: Date.now(),
+      });
+      added++;
+    }
+
+    m.close();
+    toast(`已添加 ${added} 件物品`);
+    refreshInboxBadge();
+    if (['inbox', 'room', 'rooms', 'items', 'search'].includes(route.name)) render();
+  };
 }
 
 
