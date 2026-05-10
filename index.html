@@ -203,11 +203,10 @@
       .fab-chat { right: 24px; bottom: 96px; width: 56px; height: 56px; }
     }
 
-    /* 全局即时识别按钮（与对话按钮叠放在右下角） */
+    /* 全局即时识别按钮（与对话按钮叠放在右下角，拆为拍照/选图两个） */
     .fab-scan {
       position: fixed;
       right: 18px;
-      bottom: 152px; /* = 对话按钮 bottom(88) + 高度(52) + 间距(12) */
       z-index: 45;
       width: 52px; height: 52px;
       border-radius: 50%;
@@ -220,10 +219,16 @@
       cursor: pointer;
       user-select: none;
     }
-    .fab-scan:hover { transform: scale(1.06); box-shadow: 0 10px 28px rgba(234,88,12,0.55); }
+    .fab-scan.pick {
+      background: linear-gradient(135deg, #38bdf8 0%, #0284c7 100%);
+      box-shadow: 0 6px 20px rgba(2,132,199,0.45), 0 2px 6px rgba(0,0,0,0.15);
+    }
+    .fab-scan:hover { transform: scale(1.06); }
     .fab-scan:active { transform: scale(0.95); }
-    /* 圆形按钮里只显示图标，文字隐藏 */
-    .fab-scan #__fab-scan-text { display: none; }
+    .fab-scan input { display: none; }
+    /* 自下而上：💬(88) → 🖼️(152) → 📷(216) */
+    #__fab-scan-pick { bottom: 152px; }
+    #__fab-scan-cam  { bottom: 216px; }
     .fab-scan .scan-spinner {
       width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.4);
       border-top-color: #fff; border-radius: 50%;
@@ -231,7 +236,9 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     @media (min-width: 768px) {
-      .fab-scan { right: 24px; bottom: 164px; width: 56px; height: 56px; }
+      .fab-scan { right: 24px; width: 56px; height: 56px; }
+      #__fab-scan-pick { bottom: 164px; }
+      #__fab-scan-cam  { bottom: 232px; }
     }
   </style>
 </head>
@@ -268,11 +275,15 @@
   <!-- 全局悬浮 AI 助手 -->
   <button id="__fab-chat" class="fab-chat" title="AI 收纳助手" aria-label="AI 收纳助手">💬</button>
 
-  <!-- 全局即时识别物品按钮 + 隐藏文件输入 -->
-  <label class="fab-scan" id="__fab-scan" title="拍照或上传图片识别物品">
-    <span id="__fab-scan-icon">📷</span>
-    <span id="__fab-scan-text">识别物品</span>
-    <input id="__fab-scan-input" type="file" accept="image/*" capture="environment" class="hidden"/>
+  <!-- 全局即时识别物品 - 拍照 -->
+  <label class="fab-scan" id="__fab-scan-cam" title="拍照识别物品">
+    <span class="__fab-scan-icon">📷</span>
+    <input class="__fab-scan-input" type="file" accept="image/*" capture="environment"/>
+  </label>
+  <!-- 全局即时识别物品 - 选图 -->
+  <label class="fab-scan pick" id="__fab-scan-pick" title="从相册/文件选图识别物品">
+    <span class="__fab-scan-icon">🖼️</span>
+    <input class="__fab-scan-input" type="file" accept="image/*"/>
   </label>
 
   <script src="./storage.js"></script>

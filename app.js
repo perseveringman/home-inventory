@@ -533,37 +533,43 @@ window.addEventListener('hashchange', () => {
   } catch {}
 });
 
-// 全局悬浮 AI 助手按钮 + 即时识别按钮
+// 全局悬浮 AI 助手按钮 + 即时识别按钮（拍照 + 选图）
 function bindGlobalFabs() {
   const chat = document.getElementById('__fab-chat');
   if (chat && !chat.dataset.bound) {
     chat.dataset.bound = '1';
     chat.addEventListener('click', () => openChatPanel().catch(e => toast('打开失败：' + e.message)));
   }
-  const scanInput = document.getElementById('__fab-scan-input');
-  if (scanInput && !scanInput.dataset.bound) {
-    scanInput.dataset.bound = '1';
-    scanInput.addEventListener('change', (e) => {
-      const file = e.target.files?.[0];
-      e.target.value = ''; // 清空以便再次选择同一文件
-      if (file) runQuickItemScan(file).catch(err => toast('识别失败：' + err.message));
-    });
-  }
+  ['__fab-scan-cam', '__fab-scan-pick'].forEach(labelId => {
+    const label = document.getElementById(labelId);
+    const input = label?.querySelector('input.__fab-scan-input');
+    if (input && !input.dataset.bound) {
+      input.dataset.bound = '1';
+      input.addEventListener('change', (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = ''; // 清空以便再次选择同一文件
+        if (file) runQuickItemScan(file).catch(err => toast('识别失败：' + err.message));
+      });
+    }
+  });
 }
 document.addEventListener('DOMContentLoaded', bindGlobalFabs);
 if (document.readyState !== 'loading') bindGlobalFabs();
 
 /* 即时识别物品入口：拍照/上传 → 压缩 → AI 识别 → 裁剪 → 入 Inbox */
 async function runQuickItemScan(file) {
-  const scanBtn = document.getElementById('__fab-scan');
-  const iconEl = document.getElementById('__fab-scan-icon');
-  const textEl = document.getElementById('__fab-scan-text');
-  const setBusy = (busy, text) => {
-    if (!scanBtn) return;
-    scanBtn.style.pointerEvents = busy ? 'none' : '';
-    scanBtn.style.opacity = busy ? '0.85' : '';
-    if (iconEl) iconEl.innerHTML = busy ? '<span class="scan-spinner"></span>' : '📷';
-    if (textEl) textEl.textContent = text || '识别物品';
+  const camBtn  = document.getElementById('__fab-scan-cam');
+  const pickBtn = document.getElementById('__fab-scan-pick');
+  const camIcon  = camBtn?.querySelector('.__fab-scan-icon');
+  const pickIcon = pickBtn?.querySelector('.__fab-scan-icon');
+  const setBusy = (busy, _text) => {
+    [camBtn, pickBtn].forEach(b => {
+      if (!b) return;
+      b.style.pointerEvents = busy ? 'none' : '';
+      b.style.opacity = busy ? '0.85' : '';
+    });
+    if (camIcon)  camIcon.innerHTML  = busy ? '<span class="scan-spinner"></span>' : '📷';
+    if (pickIcon) pickIcon.innerHTML = busy ? '<span class="scan-spinner"></span>' : '🖼️';
   };
 
   try {
@@ -1458,11 +1464,14 @@ async function renderPhotoDetail(app, photoId) {
             <label class="text-xs text-ink-500 whitespace-nowrap">⏰ 保质期</label>
             <input id="iexp" type="date" class="flex-1 h-9 px-2 rounded-lg bg-white border border-transparent focus:border-brand-500 outline-none text-sm" title="食品/药品保质期（可选）"/>
           </div>
-          <div class="flex gap-2 items-center">
+          <div class="flex gap-2 items-center flex-wrap">
             <label class="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-white border border-slate-200 hover:border-brand-500 text-xs text-ink-700 cursor-pointer">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="13" r="4" stroke="currentColor" stroke-width="2"/></svg>
-              拍照
-              <input id="iphoto" type="file" accept="image/*" capture="environment" class="hidden"/>
+              📷 拍照
+              <input id="iphoto-cam" type="file" accept="image/*" capture="environment" class="hidden"/>
+            </label>
+            <label class="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-white border border-slate-200 hover:border-brand-500 text-xs text-ink-700 cursor-pointer">
+              🖼️ 选图
+              <input id="iphoto-pick" type="file" accept="image/*" class="hidden"/>
             </label>
             <span id="iphoto-label" class="text-xs text-ink-500"></span>
             <div class="flex-1"></div>
@@ -1491,12 +1500,14 @@ async function renderPhotoDetail(app, photoId) {
     });
 
     let itemPhoto = null;
-    m.root.querySelector('#iphoto')?.addEventListener('change', async (e) => {
+    const onPhotoPick = async (e) => {
       const file = e.target.files?.[0]; if (!file) return;
       const { blob } = await compressImage(file, 400, 0.8);
       itemPhoto = blob;
       m.root.querySelector('#iphoto-label').textContent = '已选照片';
-    });
+    };
+    m.root.querySelector('#iphoto-cam')?.addEventListener('change', onPhotoPick);
+    m.root.querySelector('#iphoto-pick')?.addEventListener('change', onPhotoPick);
 
     m.root.querySelector('#add-item-form').onsubmit = async (e) => {
       e.preventDefault();
