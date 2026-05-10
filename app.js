@@ -288,6 +288,44 @@ const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const esc = (s = '') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtDate = ts => { const d = new Date(ts); return `${d.getMonth()+1}月${d.getDate()}日`; };
 
+/* 保质期工具：传入 ISO 日期字符串 (yyyy-mm-dd)，返回 { days, level, label, badge } 或 null
+ *   level: 'expired' | 'soon' | 'warn' | 'ok'
+ *   badge: 一段可直接插入 HTML 的小徽标
+ */
+function expiryInfo(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr + 'T23:59:59');
+  if (isNaN(d.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diffMs = d.getTime() - today.getTime();
+  const days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  let level, label, cls;
+  if (days < 0) {
+    level = 'expired';
+    label = `已过期 ${-days} 天`;
+    cls = 'bg-red-100 text-red-700 border-red-200';
+  } else if (days === 0) {
+    level = 'expired';
+    label = '今日到期';
+    cls = 'bg-red-100 text-red-700 border-red-200';
+  } else if (days <= 30) {
+    level = 'soon';
+    label = `${days} 天后过期`;
+    cls = 'bg-orange-100 text-orange-700 border-orange-200';
+  } else if (days <= 90) {
+    level = 'warn';
+    label = `${days} 天后过期`;
+    cls = 'bg-amber-50 text-amber-700 border-amber-200';
+  } else {
+    level = 'ok';
+    label = `保质至 ${dateStr}`;
+    cls = 'bg-slate-100 text-slate-600 border-slate-200';
+  }
+  const badge = `<span class="inline-block px-1.5 py-0.5 rounded border text-[10px] leading-none ${cls}" title="${label}">⏰ ${label}</span>`;
+  return { days, level, label, badge, cls };
+}
+
 function toast(msg, ms = 1800) {
   const el = $('#toast'); el.textContent = msg; el.classList.add('show');
   clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove('show'), ms);
@@ -1371,20 +1409,24 @@ async function renderPhotoDetail(app, photoId) {
 
         <h4 class="text-xs font-semibold text-ink-500 mb-2">物品清单（${items.length}）</h4>
         <div id="item-list" class="grid grid-cols-5 gap-2 max-h-72 overflow-y-auto mb-3">
-          ${items.length === 0 ? `<p class="text-sm text-ink-500 text-center py-6 col-span-full">还没有物品，在下方添加</p>` : items.map(it => `
+          ${items.length === 0 ? `<p class="text-sm text-ink-500 text-center py-6 col-span-full">还没有物品，在下方添加</p>` : items.map(it => {
+            const ei = expiryInfo(it.expiry);
+            return `
             <div class="relative group cursor-pointer" data-iid="${it.id}">
-              <div class="aspect-square rounded-xl overflow-hidden bg-slate-100 shadow-sm">
+              <div class="aspect-square rounded-xl overflow-hidden bg-slate-100 shadow-sm relative">
                 ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-3xl">📦</div>`}
+                ${ei && (ei.level === 'expired' || ei.level === 'soon') ? `<span class="absolute top-1 left-1 px-1 py-0.5 rounded text-[9px] leading-none ${ei.cls} border" title="${ei.label}">⏰</span>` : ''}
               </div>
               <div class="mt-1 text-center">
                 <div class="text-xs font-medium truncate leading-tight">${esc(it.name)}</div>
                 ${it.qty > 1 ? `<div class="text-xs text-ink-500">×${it.qty}</div>` : ''}
+                ${ei ? `<div class="mt-0.5 ${ei.level === 'expired' ? 'text-red-600' : ei.level === 'soon' ? 'text-orange-600' : 'text-ink-500'} text-[10px] leading-tight truncate" title="${ei.label}">⏰ ${ei.label}</div>` : ''}
               </div>
               <button class="del-item absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow" title="删除">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
               </button>
             </div>
-          `).join('')}
+          `;}).join('')}
         </div>
 
         <form id="add-item-form" class="space-y-2 bg-brand-50 rounded-xl p-3">
@@ -1395,6 +1437,10 @@ async function renderPhotoDetail(app, photoId) {
           </div>
           <input id="inote" type="text" placeholder="备注（可选，例如：第二层抽屉）"
             class="w-full h-10 px-3 rounded-lg bg-white border border-transparent focus:border-brand-500 outline-none text-sm"/>
+          <div class="flex gap-2 items-center">
+            <label class="text-xs text-ink-500 whitespace-nowrap">⏰ 保质期</label>
+            <input id="iexp" type="date" class="flex-1 h-9 px-2 rounded-lg bg-white border border-transparent focus:border-brand-500 outline-none text-sm" title="食品/药品保质期（可选）"/>
+          </div>
           <div class="flex gap-2 items-center">
             <label class="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-white border border-slate-200 hover:border-brand-500 text-xs text-ink-700 cursor-pointer">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="13" r="4" stroke="currentColor" stroke-width="2"/></svg>
@@ -1441,10 +1487,12 @@ async function renderPhotoDetail(app, photoId) {
       if (!name) { toast('请填物品名'); return; }
       const qty = parseInt(m.root.querySelector('#iq').value) || 1;
       const note = m.root.querySelector('#inote').value.trim();
+      const expiry = m.root.querySelector('#iexp')?.value || '';
       const image = itemPhoto || await generateItemThumb(name);
       await db.add('items', {
         id: uid(), cabinetId: cab.id, roomId: cab.roomId,
         name, qty, note, tags: [], image,
+        expiry,
         status: 'placed', source: 'manual',
         createdAt: Date.now()
       });
@@ -1536,15 +1584,19 @@ async function renderItems(app) {
                     <span class="chip">${ci.items.length}</span>
                   </button>
                   <div class="grid grid-cols-5 gap-2 pl-12">
-                    ${ci.items.map(it => `
+                    ${ci.items.map(it => {
+                      const ei = expiryInfo(it.expiry);
+                      return `
                       <div class="text-center">
-                        <div class="aspect-square rounded-xl overflow-hidden bg-slate-100 shadow-sm">
+                        <div class="aspect-square rounded-xl overflow-hidden bg-slate-100 shadow-sm relative">
                           ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-2xl">📦</div>`}
+                          ${ei && (ei.level === 'expired' || ei.level === 'soon') ? `<span class="absolute top-1 left-1 px-1 py-0.5 rounded text-[9px] leading-none ${ei.cls} border" title="${ei.label}">⏰</span>` : ''}
                         </div>
                         <div class="mt-0.5 text-xs font-medium truncate leading-tight">${esc(it.name)}</div>
                         ${it.qty > 1 ? `<div class="text-xs text-ink-500">×${it.qty}</div>` : ''}
+                        ${ei ? `<div class="mt-0.5 ${ei.level === 'expired' ? 'text-red-600' : ei.level === 'soon' ? 'text-orange-600' : 'text-ink-500'} text-[10px] leading-tight truncate" title="${ei.label}">⏰ ${ei.label}</div>` : ''}
                       </div>
-                    `).join('')}
+                    `;}).join('')}
                   </div>
                 </div>
               `;
@@ -1603,17 +1655,21 @@ async function renderInbox(app) {
               <span class="chip">${list.length} 件</span>
             </div>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-              ${list.map(it => `
+              ${list.map(it => {
+                const ei = expiryInfo(it.expiry);
+                return `
                 <button class="inbox-card text-left bg-white rounded-2xl shadow-soft hover:shadow-lg transition overflow-hidden" data-iid="${it.id}">
-                  <div class="aspect-square bg-slate-100">
+                  <div class="aspect-square bg-slate-100 relative">
                     ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-4xl">${it.aiEmoji || '📦'}</div>`}
+                    ${ei && (ei.level === 'expired' || ei.level === 'soon') ? `<span class="absolute top-1 left-1 px-1 py-0.5 rounded text-[10px] leading-none ${ei.cls} border" title="${ei.label}">⏰</span>` : ''}
                   </div>
                   <div class="p-2">
                     <div class="text-sm font-medium text-ink-900 truncate">${esc(it.name)}</div>
                     <div class="text-xs text-ink-500 mt-0.5">✨ AI 识别</div>
+                    ${ei ? `<div class="mt-1">${ei.badge}</div>` : ''}
                   </div>
                 </button>
-              `).join('')}
+              `;}).join('')}
             </div>
           </section>
         `;
@@ -1654,17 +1710,21 @@ async function openLooseListDialog(cab, room) {
         <div class="text-center py-8 text-ink-500 text-sm">还没有物品</div>
       ` : `
         <div class="grid grid-cols-3 md:grid-cols-4 gap-2 max-h-[60vh] overflow-y-auto">
-          ${items.map(it => `
+          ${items.map(it => {
+            const ei = expiryInfo(it.expiry);
+            return `
             <button class="loose-item text-left bg-slate-50 hover:bg-brand-50 rounded-xl overflow-hidden transition" data-iid="${it.id}">
-              <div class="aspect-square bg-white">
+              <div class="aspect-square bg-white relative">
                 ${it.image ? `<img src="${blobURL(it.image, 'lo-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-3xl">${it.aiEmoji || '📦'}</div>`}
+                ${ei && (ei.level === 'expired' || ei.level === 'soon') ? `<span class="absolute top-1 left-1 px-1 py-0.5 rounded text-[9px] leading-none ${ei.cls} border" title="${ei.label}">⏰</span>` : ''}
               </div>
               <div class="p-2">
                 <div class="text-xs font-medium text-ink-900 truncate">${esc(it.name)}</div>
                 ${it.status === 'pending' ? `<div class="text-[10px] text-amber-600 mt-0.5">✨ 待处理</div>` : `<div class="text-[10px] text-ink-500 mt-0.5">已归位</div>`}
+                ${ei ? `<div class="mt-0.5 ${ei.level === 'expired' ? 'text-red-600' : ei.level === 'soon' ? 'text-orange-600' : 'text-ink-500'} text-[10px] leading-tight truncate" title="${ei.label}">⏰ ${ei.label}</div>` : ''}
               </div>
             </button>
-          `).join('')}
+          `;}).join('')}
         </div>
       `}
     </div>
@@ -1712,6 +1772,15 @@ async function openItemProcessDialog(item) {
       <div>
         <label class="text-xs font-medium text-ink-500">备注</label>
         <input id="ip-note" type="text" value="${esc(item.note || '')}" placeholder="备注（可选）" class="w-full mt-1 h-9 px-3 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm"/>
+      </div>
+
+      <div>
+        <label class="text-xs font-medium text-ink-500">⏰ 保质期 <span class="text-ink-400 font-normal">（食品/药品适用，可留空）</span></label>
+        <div class="flex gap-2 items-center mt-1">
+          <input id="ip-expiry" type="date" value="${esc(item.expiry || '')}" class="flex-1 h-9 px-3 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm"/>
+          ${item.expiry ? `<button type="button" id="ip-expiry-clear" class="text-xs text-ink-500 hover:text-red-600">清除</button>` : ''}
+        </div>
+        ${(() => { const ei = expiryInfo(item.expiry); return ei ? `<div class="mt-1">${ei.badge}</div>` : ''; })()}
       </div>
 
       <div class="bg-brand-50 rounded-xl p-3 space-y-2">
@@ -1805,11 +1874,18 @@ async function openItemProcessDialog(item) {
     render();
   };
 
+  // 清除保质期按钮（如果存在）
+  const expiryEl = m.root.querySelector('#ip-expiry');
+  m.root.querySelector('#ip-expiry-clear')?.addEventListener('click', () => {
+    if (expiryEl) expiryEl.value = '';
+  });
+
   m.root.querySelector('#ip-save').onclick = async () => {
     const name = nameEl.value.trim();
     if (!name) { toast('请填物品名'); return; }
     const qty = parseInt(qtyEl.value) || 1;
     const note = noteEl.value.trim();
+    const expiry = expiryEl?.value || '';
     const rid = roomSel.value;
     const cabChoice = cabSel.value;
 
@@ -1828,6 +1904,7 @@ async function openItemProcessDialog(item) {
       name,
       qty,
       note,
+      expiry,
       cabinetId: targetCab.id,
       roomId: targetCab.roomId === '__global__' ? '__global__' : targetCab.roomId,
       status: 'placed',
@@ -1880,6 +1957,7 @@ async function renderSearch(app) {
     res.innerHTML = matched.map(it => {
       const cab = cabMap[it.cabinetId];
       const room = cab ? roomMap[cab.roomId] : null;
+      const ei = expiryInfo(it.expiry);
       return `
         <button class="result w-full bg-white rounded-xl shadow-soft hover:shadow-lg transition p-3 flex items-center gap-3 text-left" data-photo="${cab?.photoId || ''}">
           <div class="w-14 h-14 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0">
@@ -1891,6 +1969,7 @@ async function renderSearch(app) {
               ${room ? `${room.icon || '🏠'} ${esc(room.name)} › 🗄️ ${esc(cab.name)}` : '（柜子已删除）'}
             </div>
             ${it.note ? `<div class="text-xs text-ink-500 mt-0.5 truncate">💭 ${esc(it.note)}</div>` : ''}
+            ${ei ? `<div class="mt-1">${ei.badge}</div>` : ''}
           </div>
           <svg class="text-ink-300" width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
