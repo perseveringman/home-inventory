@@ -925,12 +925,20 @@ async function renderRoomDetail(app, roomId) {
         <div class="text-center py-12 px-6 bg-white rounded-2xl shadow-soft">
           <div class="text-5xl mb-3">📷</div>
           <p class="text-sm text-ink-500 mb-4">还没有照片</p>
-          <label class="inline-block">
-            <input type="file" accept="image/*" capture="environment" class="hidden" id="__addphoto1"/>
-            <span class="inline-flex items-center gap-2 px-5 h-11 rounded-full bg-brand-500 hover:bg-brand-600 text-white font-medium shadow-soft cursor-pointer">
-              📷 拍照 / 选图
-            </span>
-          </label>
+          <div class="flex items-center justify-center gap-3 flex-wrap">
+            <label class="inline-block">
+              <input type="file" accept="image/*" capture="environment" class="hidden" id="__addphoto-cam1"/>
+              <span class="inline-flex items-center gap-2 px-5 h-11 rounded-full bg-brand-500 hover:bg-brand-600 text-white font-medium shadow-soft cursor-pointer">
+                📷 拍照
+              </span>
+            </label>
+            <label class="inline-block">
+              <input type="file" accept="image/*" class="hidden" id="__addphoto-pick1"/>
+              <span class="inline-flex items-center gap-2 px-5 h-11 rounded-full bg-white border border-slate-200 hover:border-brand-500 text-ink-700 hover:text-brand-600 font-medium shadow-soft cursor-pointer">
+                🖼️ 选图
+              </span>
+            </label>
+          </div>
         </div>
       ` : `
         <div class="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4 mb-4">
@@ -946,11 +954,19 @@ async function renderRoomDetail(app, roomId) {
               </button>
             `;
           }).join('')}
-          <label class="aspect-[4/3] rounded-2xl border-2 border-dashed border-slate-300 hover:border-brand-500 text-ink-500 hover:text-brand-600 flex flex-col items-center justify-center cursor-pointer transition">
-            <input type="file" accept="image/*" capture="environment" class="hidden" id="__addphoto2"/>
+          <div class="aspect-[4/3] rounded-2xl border-2 border-dashed border-slate-300 hover:border-brand-500 text-ink-500 hover:text-brand-600 flex flex-col items-center justify-center transition gap-1.5 p-2">
             <div class="text-3xl">＋</div>
-            <div class="text-xs mt-1">添加照片</div>
-          </label>
+            <div class="flex items-center gap-2">
+              <label class="cursor-pointer">
+                <input type="file" accept="image/*" capture="environment" class="hidden" id="__addphoto-cam2"/>
+                <span class="inline-flex items-center gap-1 px-3 h-8 rounded-full bg-brand-500 text-white text-xs font-medium hover:bg-brand-600">📷 拍照</span>
+              </label>
+              <label class="cursor-pointer">
+                <input type="file" accept="image/*" class="hidden" id="__addphoto-pick2"/>
+                <span class="inline-flex items-center gap-1 px-3 h-8 rounded-full bg-white border border-slate-200 text-ink-700 text-xs font-medium hover:border-brand-500 hover:text-brand-600">🖼️ 选图</span>
+              </label>
+            </div>
+          </div>
         </div>
       `}
 
@@ -988,8 +1004,9 @@ async function renderRoomDetail(app, roomId) {
     toast('照片已添加');
     go({ name: 'photo', id: photo.id });
   };
-  $('#__addphoto1')?.addEventListener('change', e => addPhoto(e.target));
-  $('#__addphoto2')?.addEventListener('change', e => addPhoto(e.target));
+  ['__addphoto-cam1', '__addphoto-pick1', '__addphoto-cam2', '__addphoto-pick2'].forEach(id => {
+    $('#' + id)?.addEventListener('change', e => addPhoto(e.target));
+  });
 }
 
 /* ================================================================
