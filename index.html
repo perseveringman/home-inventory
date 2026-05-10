@@ -203,34 +203,35 @@
       .fab-chat { right: 24px; bottom: 96px; width: 56px; height: 56px; }
     }
 
-    /* 全局即时识别按钮（顶部悬浮） */
+    /* 全局即时识别按钮（与对话按钮叠放在右下角） */
     .fab-scan {
       position: fixed;
       right: 18px;
-      top: 12px;
+      bottom: 152px; /* = 对话按钮 bottom(88) + 高度(52) + 间距(12) */
       z-index: 45;
-      height: 40px;
-      padding: 0 14px 0 12px;
-      border-radius: 999px;
+      width: 52px; height: 52px;
+      border-radius: 50%;
       background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);
       color: #fff;
-      box-shadow: 0 4px 14px rgba(234,88,12,0.40), 0 2px 4px rgba(0,0,0,0.12);
-      display: inline-flex; align-items: center; gap: 6px;
-      font-size: 13px; font-weight: 600;
+      box-shadow: 0 6px 20px rgba(234,88,12,0.45), 0 2px 6px rgba(0,0,0,0.15);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
       transition: transform .15s, box-shadow .15s;
       cursor: pointer;
       user-select: none;
     }
-    .fab-scan:hover { transform: scale(1.04); box-shadow: 0 6px 20px rgba(234,88,12,0.55); }
+    .fab-scan:hover { transform: scale(1.06); box-shadow: 0 10px 28px rgba(234,88,12,0.55); }
     .fab-scan:active { transform: scale(0.95); }
+    /* 圆形按钮里只显示图标，文字隐藏 */
+    .fab-scan #__fab-scan-text { display: none; }
     .fab-scan .scan-spinner {
-      width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.4);
+      width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.4);
       border-top-color: #fff; border-radius: 50%;
       animation: spin .8s linear infinite; display: inline-block;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     @media (min-width: 768px) {
-      .fab-scan { right: 24px; top: 18px; height: 44px; padding: 0 18px 0 14px; font-size: 14px; }
+      .fab-scan { right: 24px; bottom: 164px; width: 56px; height: 56px; }
     }
   </style>
 </head>
