@@ -9,8 +9,8 @@
 
 /* ---------- 极简 IndexedDB 封装 ---------- */
 const DB_NAME = 'home-inventory';
-const DB_VERSION = 2;
-const STORES = ['rooms', 'photos', 'cabinets', 'items', 'config'];
+const DB_VERSION = 3;
+const STORES = ['rooms', 'photos', 'cabinets', 'items', 'config', 'subscriptions'];
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -288,6 +288,36 @@ const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const esc = (s = '') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtDate = ts => { const d = new Date(ts); return `${d.getMonth()+1}月${d.getDate()}日`; };
 
+/* ---------- 预设标签 ----------
+ * 用户常用品类标签。可在物品 modal 里一键打上；也支持自定义标签。
+ * 这些标签会被提醒引擎和统计页用作分类维度。
+ */
+const PRESET_TAGS = [
+  { name: '药品',     emoji: '💊' },
+  { name: '保健品',   emoji: '🌿' },
+  { name: '食品',     emoji: '🍱' },
+  { name: '零食',     emoji: '🍪' },
+  { name: '饮料',     emoji: '🥤' },
+  { name: '数码',     emoji: '💻' },
+  { name: '家电',     emoji: '🔌' },
+  { name: '衣物',     emoji: '👕' },
+  { name: '书籍',     emoji: '📚' },
+  { name: '文具',     emoji: '✏️' },
+  { name: '工具',     emoji: '🔧' },
+  { name: '玩具',     emoji: '🧸' },
+  { name: '美妆',     emoji: '💄' },
+  { name: '日用',     emoji: '🧻' },
+  { name: '厨具',     emoji: '🍳' },
+];
+
+/* 是否填了任一扩展属性（用于默认展开 modal 的"更多属性"区） */
+function hasExtendedProps(item) {
+  if (!item) return false;
+  return !!(item.openedAt || item.openedShelfDays || item.purchasedAt
+    || item.warrantyMonths || item.minStock != null && item.minStock !== ''
+    || item.season);
+}
+
 /* 保质期工具：传入 ISO 日期字符串 (yyyy-mm-dd)，返回 { days, level, label, badge } 或 null
  *   level: 'expired' | 'soon' | 'warn' | 'ok'
  *   badge: 一段可直接插入 HTML 的小徽标
@@ -324,6 +354,171 @@ function expiryInfo(dateStr) {
   }
   const badge = `<span class="inline-block px-1.5 py-0.5 rounded border text-[10px] leading-none ${cls}" title="${label}">⏰ ${label}</span>`;
   return { days, level, label, badge, cls };
+}
+
+/* ================================================================
+ * 提醒事件引擎
+ * 从所有物品中派生出 6 类时效性事件：
+ *   1. expiry    保质期临近/已过
+ *   2. opened    开封后超过建议天数
+ *   3. warranty  保修期临近/已过
+ *   4. lowstock  库存低于下限
+ *   5. seasonal  换季提醒（当前月份匹配季节）
+ *   6. dust      久未动（createdAt 超过 180 天且从未编辑）
+ * 每个事件 { kind, level, itemId, title, subtitle, daysLeft, icon }
+ * level: 'critical' | 'warn' | 'info'
+ * ================================================================ */
+const REMINDER_ICONS = {
+  expiry:   '⏰',
+  opened:   '🧃',
+  warranty: '🛡️',
+  lowstock: '📉',
+  seasonal: '🗓️',
+  dust:     '💤',
+};
+
+const DUST_DAYS = 180;
+
+function daysBetween(aMs, bMs) {
+  return Math.floor((bMs - aMs) / (24 * 60 * 60 * 1000));
+}
+
+function computeReminderEvents(items) {
+  const events = [];
+  const now = Date.now();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const curMonth = today.getMonth() + 1; // 1~12
+
+  // 季节 → 月份范围
+  const SEASON_MONTHS = {
+    spring: [3, 4, 5],
+    summer: [6, 7, 8],
+    autumn: [9, 10, 11],
+    winter: [12, 1, 2],
+  };
+
+  for (const it of items) {
+    // 跳过待处理（它们自己就会出现在待处理列表里，不重复生成事件）
+    if (it.status === 'pending') continue;
+
+    // 1. 保质期
+    if (it.expiry) {
+      const info = expiryInfo(it.expiry);
+      if (info && info.level !== 'ok') {
+        events.push({
+          kind: 'expiry',
+          level: info.level === 'expired' || info.level === 'soon' ? 'critical' : 'warn',
+          itemId: it.id,
+          title: it.name,
+          subtitle: info.label,
+          daysLeft: info.days,
+          icon: REMINDER_ICONS.expiry,
+        });
+      }
+    }
+
+    // 2. 开封后超期
+    if (it.openedAt && it.openedShelfDays) {
+      const openedMs = new Date(it.openedAt + 'T00:00:00').getTime();
+      if (!isNaN(openedMs)) {
+        const passed = daysBetween(openedMs, now);
+        const remain = (+it.openedShelfDays) - passed;
+        if (remain <= 14) {
+          events.push({
+            kind: 'opened',
+            level: remain < 0 ? 'critical' : remain <= 3 ? 'critical' : 'warn',
+            itemId: it.id,
+            title: it.name,
+            subtitle: remain < 0 ? `开封已 ${passed} 天 · 超过建议 ${-remain} 天` : `开封已 ${passed} 天 · 还剩 ${remain} 天`,
+            daysLeft: remain,
+            icon: REMINDER_ICONS.opened,
+          });
+        }
+      }
+    }
+
+    // 3. 保修到期
+    if (it.purchasedAt && it.warrantyMonths) {
+      const pMs = new Date(it.purchasedAt + 'T00:00:00').getTime();
+      if (!isNaN(pMs)) {
+        const end = new Date(pMs);
+        end.setMonth(end.getMonth() + (+it.warrantyMonths));
+        const remainDays = daysBetween(now, end.getTime());
+        if (remainDays <= 60) {
+          events.push({
+            kind: 'warranty',
+            level: remainDays < 0 ? 'info' : remainDays <= 30 ? 'critical' : 'warn',
+            itemId: it.id,
+            title: it.name,
+            subtitle: remainDays < 0 ? `保修已过 ${-remainDays} 天` : `保修还剩 ${remainDays} 天`,
+            daysLeft: remainDays,
+            icon: REMINDER_ICONS.warranty,
+          });
+        }
+      }
+    }
+
+    // 4. 库存低
+    if (it.minStock != null && it.minStock !== '' && (+it.minStock) > 0) {
+      const q = +it.qty || 0;
+      if (q <= (+it.minStock)) {
+        events.push({
+          kind: 'lowstock',
+          level: q === 0 ? 'critical' : 'warn',
+          itemId: it.id,
+          title: it.name,
+          subtitle: q === 0 ? `库存为 0 · 建议补货` : `库存 ${q} 件（低于下限 ${it.minStock}）`,
+          daysLeft: -999,
+          icon: REMINDER_ICONS.lowstock,
+        });
+      }
+    }
+
+    // 5. 换季
+    if (it.season && SEASON_MONTHS[it.season]) {
+      const months = SEASON_MONTHS[it.season];
+      // 只在"季节前一个月"或"季节第一个月"提醒
+      const firstMonth = months[0];
+      const preMonth = firstMonth === 1 ? 12 : firstMonth - 1;
+      if (curMonth === preMonth || curMonth === firstMonth) {
+        events.push({
+          kind: 'seasonal',
+          level: 'info',
+          itemId: it.id,
+          title: it.name,
+          subtitle: `${seasonLabel(it.season)}将至 · 该整理上架了`,
+          daysLeft: 9999,
+          icon: REMINDER_ICONS.seasonal,
+        });
+      }
+    }
+
+    // 6. 久未动
+    const lastMs = it.lastTouchedAt || it.createdAt || 0;
+    if (lastMs && daysBetween(lastMs, now) >= DUST_DAYS) {
+      events.push({
+        kind: 'dust',
+        level: 'info',
+        itemId: it.id,
+        title: it.name,
+        subtitle: `已 ${daysBetween(lastMs, now)} 天未动 · 是否还需要？`,
+        daysLeft: 99999,
+        icon: REMINDER_ICONS.dust,
+      });
+    }
+  }
+
+  // 排序：critical 优先，daysLeft 越小越急
+  const levelOrder = { critical: 0, warn: 1, info: 2 };
+  events.sort((a, b) => {
+    if (levelOrder[a.level] !== levelOrder[b.level]) return levelOrder[a.level] - levelOrder[b.level];
+    return a.daysLeft - b.daysLeft;
+  });
+  return events;
+}
+
+function seasonLabel(s) {
+  return { spring: '🌸 春季', summer: '☀️ 夏季', autumn: '🍂 秋季', winter: '❄️ 冬季' }[s] || s;
 }
 
 function toast(msg, ms = 1800) {
@@ -515,21 +710,62 @@ async function detectCabinets(blob, { width, height }) {
   return { cabinets: boxes, items: [] };
 }
 
-/* ---------- 路由 ---------- */
+/* ---------- 路由（两层分层） ----------
+ * scene：顶部场景 tab —— storage / inbox / overview / subscribe / settings
+ *   - storage 场景下，底部 tab（rooms/items/search）才出现
+ *   - 其他 scene 都是"单页"，不走底部 route
+ * route：底部 tab 细分页 —— 仅在 storage 场景下生效
+ *   - rooms / room / photo / items / search
+ */
+const STORAGE_ROUTES = new Set(['rooms', 'room', 'photo', 'items', 'search']);
+const TOP_SCENES = new Set(['storage', 'inbox', 'overview', 'subscribe', 'settings']);
+
 const state = {
+  scene: 'storage',
   route: { name: 'rooms' },
 };
 
 function go(route) {
-  state.route = typeof route === 'string' ? { name: route } : route;
+  const r = typeof route === 'string' ? { name: route } : route;
+  if (!r || !r.name) return;
+  // 若目标是 storage 的底部 route
+  if (STORAGE_ROUTES.has(r.name)) {
+    state.scene = 'storage';
+    state.route = r;
+  } else if (TOP_SCENES.has(r.name)) {
+    // 顶部 scene 直接切换
+    state.scene = r.name;
+  } else {
+    // 未知目标 —— 忽略
+    return;
+  }
   render();
-  history.replaceState(null, '', '#' + encodeURIComponent(JSON.stringify(state.route)));
+  persistRoute();
+}
+
+function goScene(sceneName) {
+  if (!TOP_SCENES.has(sceneName)) return;
+  state.scene = sceneName;
+  if (sceneName === 'storage' && !STORAGE_ROUTES.has(state.route.name)) {
+    state.route = { name: 'rooms' };
+  }
+  render();
+  persistRoute();
+}
+
+function persistRoute() {
+  const payload = state.scene === 'storage' ? state.route : { name: state.scene };
+  history.replaceState(null, '', '#' + encodeURIComponent(JSON.stringify(payload)));
 }
 
 window.addEventListener('hashchange', () => {
   try {
     const r = JSON.parse(decodeURIComponent(location.hash.slice(1)));
-    if (r && r.name) { state.route = r; render(); }
+    if (r && r.name) {
+      if (STORAGE_ROUTES.has(r.name)) { state.scene = 'storage'; state.route = r; }
+      else if (TOP_SCENES.has(r.name)) { state.scene = r.name; }
+      render();
+    }
   } catch {}
 });
 
@@ -793,38 +1029,57 @@ async function openQuickAddDialog() {
 async function render() {
   const app = $('#app');
   app.innerHTML = '<div class="p-8 text-center text-ink-500">加载中…</div>';
-  // tab 高亮
-  $$('.tab-btn').forEach(b => {
-    const active = b.dataset.route === state.route.name
-                || (state.route.name === 'room' && b.dataset.route === 'rooms')
-                || (state.route.name === 'photo' && b.dataset.route === 'rooms');
+
+  // 顶部 scene tab 高亮
+  $('.scene-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.scene === state.scene);
+  });
+
+  // 底部 tab 只在 storage 场景出现
+  const tabbar = document.getElementById('__tabbar');
+  if (tabbar) tabbar.classList.toggle('hidden', state.scene !== 'storage');
+
+  // 底部 tab 高亮（仅 storage 场景）
+  $('.tab-btn').forEach(b => {
+    const active = state.scene === 'storage' && (
+         b.dataset.route === state.route.name
+      || (state.route.name === 'room' && b.dataset.route === 'rooms')
+      || (state.route.name === 'photo' && b.dataset.route === 'rooms'));
     b.classList.toggle('text-brand-600', active);
     b.classList.toggle('md:bg-brand-50', active);
     b.classList.toggle('text-ink-500', !active);
   });
 
-  // 刷新 inbox 红点
+  // 刷新顶部「待处理」徽标
   refreshInboxBadge();
 
+  // —— 顶部场景分发 ——
+  if (state.scene === 'inbox')     return renderInbox(app);
+  if (state.scene === 'overview')  return renderOverview(app);
+  if (state.scene === 'subscribe') return renderSubscribe(app);
+  if (state.scene === 'settings')  return renderSettings(app);
+
+  // —— 收纳场景下的子路由 ——
   const r = state.route;
   if (r.name === 'rooms')    return renderRooms(app);
   if (r.name === 'room')     return renderRoomDetail(app, r.id);
   if (r.name === 'photo')    return renderPhotoDetail(app, r.id);
   if (r.name === 'items')    return renderItems(app);
-  if (r.name === 'inbox')    return renderInbox(app);
   if (r.name === 'search')   return renderSearch(app);
-  if (r.name === 'settings') return renderSettings(app);
   app.innerHTML = '<div class="p-8">未知页面</div>';
 }
 
 async function refreshInboxBadge() {
   try {
-    const items = await db.all('items');
+    const [items, subs] = await Promise.all([db.all('items'), db.all('subscriptions').catch(() => [])]);
     const pending = items.filter(i => i.status === 'pending').length;
-    const el = document.getElementById('inbox-badge');
+    const itemEvents = computeReminderEvents(items).filter(e => e.level === 'critical');
+    const subEvents  = computeSubscriptionEvents(subs || []).filter(e => e.level === 'critical');
+    const total = pending + itemEvents.length + subEvents.length;
+    const el = document.getElementById('scene-inbox-badge');
     if (!el) return;
-    if (pending > 0) {
-      el.textContent = pending > 99 ? '99+' : String(pending);
+    if (total > 0) {
+      el.textContent = total > 99 ? '99+' : String(total);
       el.classList.remove('hidden');
     } else {
       el.classList.add('hidden');
@@ -1783,74 +2038,202 @@ async function renderItems(app) {
 }
 
 /* ================================================================
- * 页面：📥 待处理 Inbox
+ * 页面：📥 待处理（顶部 scene）
+ * 两段内容：
+ *   ① AI 识别未归位的物品（按房间分组）
+ *   ② 系统自动生成的提醒事件（过期/开封/保修/库存/换季/久未动）
  * ================================================================ */
+const REMINDER_KIND_LABEL = {
+  expiry:       '保质期',
+  opened:       '开封后',
+  warranty:     '保修',
+  lowstock:     '库存',
+  seasonal:     '换季',
+  dust:         '久未动',
+  subscription: '订阅扣款',
+};
+REMINDER_ICONS.subscription = '💳';
+
 async function renderInbox(app) {
-  const [rooms, cabinets, allItems, photos] = await Promise.all([
-    db.all('rooms'), db.all('cabinets'), db.all('items'), db.all('photos'),
+  const [rooms, cabinets, allItems, allSubs] = await Promise.all([
+    db.all('rooms'), db.all('cabinets'), db.all('items'), db.all('subscriptions').catch(() => []),
   ]);
   const pending = allItems.filter(i => i.status === 'pending');
   const roomMap = Object.fromEntries(rooms.map(r => [r.id, r]));
-  const photoMap = Object.fromEntries(photos.map(p => [p.id, p]));
+  const cabMap = Object.fromEntries(cabinets.map(c => [c.id, c]));
+  const itemMap = Object.fromEntries(allItems.map(i => [i.id, i]));
+  const subMap = Object.fromEntries((allSubs || []).map(s => [s.id, s]));
+  const events = [...computeReminderEvents(allItems), ...computeSubscriptionEvents(allSubs || [])]
+    .sort((a, b) => {
+      const order = { critical: 0, warn: 1, info: 2 };
+      if (order[a.level] !== order[b.level]) return order[a.level] - order[b.level];
+      return a.daysLeft - b.daysLeft;
+    });
 
-  // 按房间分组
-  const groups = {};
+  // 按房间分组 pending
+  const pendingGroups = {};
   pending.forEach(it => {
     const rid = it.roomId || '__global__';
-    groups[rid] = groups[rid] || [];
-    groups[rid].push(it);
+    pendingGroups[rid] = pendingGroups[rid] || [];
+    pendingGroups[rid].push(it);
   });
-  const groupIds = Object.keys(groups);
+
+  // 按事件类型分组
+  const eventGroups = {};
+  events.forEach(ev => {
+    eventGroups[ev.kind] = eventGroups[ev.kind] || [];
+    eventGroups[ev.kind].push(ev);
+  });
+
+  const criticalCount = events.filter(e => e.level === 'critical').length;
+  const totalTodos = pending.length + events.length;
 
   app.innerHTML = `
     ${header({
       title: '📥 待处理',
-      subtitle: pending.length === 0 ? '所有物品都已归位' : `共 ${pending.length} 件待处理物品`,
+      subtitle: totalTodos === 0
+        ? '一切井井有条'
+        : `${pending.length} 件未归位 · ${events.length} 条提醒${criticalCount > 0 ? ` · ${criticalCount} 条紧急` : ''}`,
     })}
-    <div class="px-4 md:px-6 py-4">
-      ${pending.length === 0 ? `
+
+    <div class="px-4 md:px-6 py-4 space-y-6">
+      ${totalTodos === 0 ? `
         <div class="text-center py-16 bg-white rounded-2xl shadow-soft">
           <div class="text-6xl mb-3">🎉</div>
-          <p class="text-ink-700 font-medium mb-1">干净利落！</p>
-          <p class="text-sm text-ink-500">所有 AI 识别出的物品都已经归位了。</p>
+          <p class="text-ink-700 font-medium mb-1">一切井井有条</p>
+          <p class="text-sm text-ink-500">没有待归位物品，也没有临近提醒。</p>
         </div>
-      ` : groupIds.map(rid => {
-        const room = roomMap[rid];
-        const label = room ? `${room.icon || '🏠'} ${room.name}` : '📦 全屋自由区（未分类）';
-        const list = groups[rid];
-        return `
-          <section class="mb-6">
-            <div class="flex items-center justify-between mb-3">
-              <h3 class="text-sm font-semibold text-ink-900">${esc(label)}</h3>
-              <span class="chip">${list.length} 件</span>
-            </div>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-              ${list.map(it => {
-                const ei = expiryInfo(it.expiry);
-                return `
-                <button class="inbox-card text-left bg-white rounded-2xl shadow-soft hover:shadow-lg transition overflow-hidden" data-iid="${it.id}">
-                  <div class="aspect-square bg-slate-100 relative">
-                    ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-4xl">${it.aiEmoji || '📦'}</div>`}
-                    ${ei && (ei.level === 'expired' || ei.level === 'soon') ? `<span class="absolute top-1 left-1 px-1 py-0.5 rounded text-[10px] leading-none ${ei.cls} border" title="${ei.label}">⏰</span>` : ''}
-                  </div>
-                  <div class="p-2">
-                    <div class="text-sm font-medium text-ink-900 truncate">${esc(it.name)}</div>
-                    <div class="text-xs text-ink-500 mt-0.5">✨ AI 识别</div>
-                    ${ei ? `<div class="mt-1">${ei.badge}</div>` : ''}
-                  </div>
-                </button>
-              `;}).join('')}
-            </div>
-          </section>
-        `;
-      }).join('')}
+      ` : ''}
+
+      ${pending.length > 0 ? `
+        <section>
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-bold text-ink-900 flex items-center gap-2">
+              <span class="text-lg">✨</span> AI 识别待归位
+              <span class="chip">${pending.length}</span>
+            </h2>
+          </div>
+          ${Object.keys(pendingGroups).map(rid => {
+            const room = roomMap[rid];
+            const label = room ? `${room.icon || '🏠'} ${room.name}` : '📦 全屋自由区（未分类）';
+            const list = pendingGroups[rid];
+            return `
+              <div class="mb-4">
+                <div class="text-xs text-ink-500 mb-2">${esc(label)}</div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  ${list.map(it => {
+                    const ei = expiryInfo(it.expiry);
+                    return `
+                    <button class="inbox-card text-left bg-white rounded-2xl shadow-soft hover:shadow-lg transition overflow-hidden" data-iid="${it.id}">
+                      <div class="aspect-square bg-slate-100 relative">
+                        ${it.image ? `<img src="${blobURL(it.image, 'item-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-4xl">${it.aiEmoji || '📦'}</div>`}
+                        ${ei && (ei.level === 'expired' || ei.level === 'soon') ? `<span class="absolute top-1 left-1 px-1 py-0.5 rounded text-[10px] leading-none ${ei.cls} border" title="${ei.label}">⏰</span>` : ''}
+                      </div>
+                      <div class="p-2">
+                        <div class="text-sm font-medium text-ink-900 truncate">${esc(it.name)}</div>
+                        <div class="text-xs text-ink-500 mt-0.5">✨ AI 识别</div>
+                        ${ei ? `<div class="mt-1">${ei.badge}</div>` : ''}
+                      </div>
+                    </button>
+                  `;}).join('')}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </section>
+      ` : ''}
+
+      ${events.length > 0 ? `
+        <section>
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-bold text-ink-900 flex items-center gap-2">
+              <span class="text-lg">⏰</span> 提醒事件
+              <span class="chip">${events.length}</span>
+              ${criticalCount > 0 ? `<span class="chip" style="background:#fee2e2;color:#991b1b">${criticalCount} 紧急</span>` : ''}
+            </h2>
+          </div>
+          ${Object.keys(eventGroups).map(kind => {
+            const list = eventGroups[kind];
+            return `
+              <div class="mb-4 bg-white rounded-2xl shadow-soft overflow-hidden">
+                <div class="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2">
+                  <span>${REMINDER_ICONS[kind] || '•'}</span>
+                  <span class="text-sm font-semibold text-ink-900">${REMINDER_KIND_LABEL[kind] || kind}</span>
+                  <span class="chip">${list.length}</span>
+                </div>
+                <div class="divide-y divide-slate-100">
+                  ${list.map(ev => {
+                    const levelCls = ev.level === 'critical'
+                      ? 'bg-red-100 text-red-700 border-red-200'
+                      : ev.level === 'warn'
+                        ? 'bg-orange-100 text-orange-700 border-orange-200'
+                        : 'bg-slate-100 text-slate-600 border-slate-200';
+                    // 订阅事件
+                    if (ev.kind === 'subscription') {
+                      const sub = subMap[ev.subId];
+                      if (!sub) return '';
+                      const cat = SUB_CATEGORIES.find(c => c.id === sub.category) || { name: '其他', emoji: '📌' };
+                      return `
+                        <button class="sub-event-row w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left" data-sid="${ev.subId}">
+                          <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xl flex-shrink-0" style="background:${subColorBg(sub.name)}">${esc(sub.icon || cat.emoji)}</div>
+                          <div class="flex-1 min-w-0">
+                            <div class="text-sm font-medium text-ink-900 truncate">${esc(ev.title)}</div>
+                            <div class="text-xs text-ink-500 truncate">${cat.emoji} ${esc(cat.name)}${sub.paymentMethod ? ` · ${esc(sub.paymentMethod)}` : ''}</div>
+                          </div>
+                          <div class="text-right flex-shrink-0">
+                            <span class="inline-block px-2 py-0.5 rounded border text-[10px] leading-tight ${levelCls}">${esc(ev.subtitle)}</span>
+                          </div>
+                        </button>
+                      `;
+                    }
+                    // 物品事件
+                    const it = itemMap[ev.itemId];
+                    if (!it) return '';
+                    const cab = cabMap[it.cabinetId];
+                    const room = cab ? roomMap[cab.roomId] : null;
+                    const location = room
+                      ? `${room.icon || '🏠'} ${esc(room.name)}${cab && !isLooseCabinet(cab) ? ` › 🗄️ ${esc(cab.name)}` : ''}`
+                      : (it.roomId === '__global__' ? '📦 全屋自由区' : '—');
+                    return `
+                      <button class="event-row w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left" data-iid="${ev.itemId}">
+                        <div class="w-10 h-10 rounded-lg overflow-hidden bg-slate-100 flex-shrink-0">
+                          ${it.image ? `<img src="${blobURL(it.image, 'ev-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-xl">${it.aiEmoji || '📦'}</div>`}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                          <div class="text-sm font-medium text-ink-900 truncate">${esc(ev.title)}</div>
+                          <div class="text-xs text-ink-500 truncate">${esc(location)}</div>
+                        </div>
+                        <div class="text-right flex-shrink-0">
+                          <span class="inline-block px-2 py-0.5 rounded border text-[10px] leading-tight ${levelCls}">${esc(ev.subtitle)}</span>
+                        </div>
+                      </button>
+                    `;
+                  }).join('')}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </section>
+      ` : ''}
     </div>
   `;
 
-  $$('.inbox-card').forEach(b => {
+  $('.inbox-card').forEach(b => {
     b.onclick = () => {
       const item = pending.find(x => x.id === b.dataset.iid);
       if (item) openItemProcessDialog(item);
+    };
+  });
+  $('.event-row').forEach(b => {
+    b.onclick = async () => {
+      const item = await db.get('items', b.dataset.iid);
+      if (item) openItemProcessDialog(item);
+    };
+  });
+  $('.sub-event-row').forEach(b => {
+    b.onclick = async () => {
+      const sub = await db.get('subscriptions', b.dataset.sid);
+      if (sub) openSubscriptionDialog(sub);
     };
   });
 }
@@ -1953,6 +2336,66 @@ async function openItemProcessDialog(item) {
         ${(() => { const ei = expiryInfo(item.expiry); return ei ? `<div class="mt-1">${ei.badge}</div>` : ''; })()}
       </div>
 
+      <!-- 标签 -->
+      <div>
+        <label class="text-xs font-medium text-ink-500">🏷️ 标签</label>
+        <div id="ip-tags-row" class="mt-1 flex flex-wrap gap-1.5">
+          ${PRESET_TAGS.map(t => {
+            const on = (item.tags || []).includes(t.name);
+            return `<button type="button" data-tag="${esc(t.name)}" class="tag-btn h-7 px-2.5 rounded-full text-xs border ${on ? 'bg-brand-500 text-white border-brand-500' : 'bg-white text-ink-700 border-slate-200 hover:border-brand-500'}">${t.emoji} ${esc(t.name)}</button>`;
+          }).join('')}
+          <input id="ip-tag-custom" type="text" placeholder="+ 自定义" class="h-7 px-2.5 rounded-full text-xs border border-dashed border-slate-300 focus:border-brand-500 outline-none w-20 focus:w-28 transition-all"/>
+        </div>
+        <div id="ip-custom-tags" class="mt-1.5 flex flex-wrap gap-1.5">
+          ${(item.tags || []).filter(t => !PRESET_TAGS.find(p => p.name === t)).map(t =>
+            `<span class="inline-flex items-center gap-1 h-6 px-2 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-xs" data-custom="${esc(t)}">${esc(t)}<button type="button" class="rm-custom hover:text-red-600">×</button></span>`
+          ).join('')}
+        </div>
+      </div>
+
+      <!-- 更多属性（折叠） -->
+      <details class="bg-slate-50 rounded-xl overflow-hidden" ${hasExtendedProps(item) ? 'open' : ''}>
+        <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-ink-700 hover:bg-slate-100">⚡ 更多属性 <span class="text-ink-400 font-normal">（可选，按需填写以启用提醒）</span></summary>
+        <div class="px-3 pb-3 pt-1 space-y-3">
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-[11px] text-ink-500">🧃 开封日期</label>
+              <input id="ip-opened" type="date" value="${esc(item.openedAt || '')}" class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+            </div>
+            <div>
+              <label class="text-[11px] text-ink-500">开封后可用(天)</label>
+              <input id="ip-opened-days" type="number" min="1" value="${esc(item.openedShelfDays ?? '')}" placeholder="如 30" class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-[11px] text-ink-500">🛡️ 购买日期</label>
+              <input id="ip-purchased" type="date" value="${esc(item.purchasedAt || '')}" class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+            </div>
+            <div>
+              <label class="text-[11px] text-ink-500">保修(月)</label>
+              <input id="ip-warranty" type="number" min="1" value="${esc(item.warrantyMonths ?? '')}" placeholder="如 12" class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-[11px] text-ink-500">📉 库存下限</label>
+              <input id="ip-minstock" type="number" min="0" value="${esc(item.minStock ?? '')}" placeholder="低于此数字提醒" class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+            </div>
+            <div>
+              <label class="text-[11px] text-ink-500">🗓️ 季节属性</label>
+              <select id="ip-season" class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs">
+                <option value="" ${!item.season ? 'selected' : ''}>— 无 —</option>
+                <option value="spring" ${item.season === 'spring' ? 'selected' : ''}>🌸 春</option>
+                <option value="summer" ${item.season === 'summer' ? 'selected' : ''}>☀️ 夏</option>
+                <option value="autumn" ${item.season === 'autumn' ? 'selected' : ''}>🍂 秋</option>
+                <option value="winter" ${item.season === 'winter' ? 'selected' : ''}>❄️ 冬</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </details>
+
       <div class="bg-brand-50 rounded-xl p-3 space-y-2">
         <div class="text-xs font-semibold text-brand-700">放到哪里</div>
         <div class="flex gap-2">
@@ -2050,6 +2493,51 @@ async function openItemProcessDialog(item) {
     if (expiryEl) expiryEl.value = '';
   });
 
+  // —— 标签交互：选中/取消预设标签 + 自定义标签 ——
+  let currentTags = [...(item.tags || [])];
+  const tagsRow = m.root.querySelector('#ip-tags-row');
+  const customWrap = m.root.querySelector('#ip-custom-tags');
+  const refreshTagBtns = () => {
+    tagsRow.querySelectorAll('.tag-btn').forEach(b => {
+      const on = currentTags.includes(b.dataset.tag);
+      b.className = `tag-btn h-7 px-2.5 rounded-full text-xs border ${on ? 'bg-brand-500 text-white border-brand-500' : 'bg-white text-ink-700 border-slate-200 hover:border-brand-500'}`;
+    });
+  };
+  const refreshCustomTags = () => {
+    const customs = currentTags.filter(t => !PRESET_TAGS.find(p => p.name === t));
+    customWrap.innerHTML = customs.map(t =>
+      `<span class="inline-flex items-center gap-1 h-6 px-2 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-xs" data-custom="${esc(t)}">${esc(t)}<button type="button" class="rm-custom hover:text-red-600">×</button></span>`
+    ).join('');
+    customWrap.querySelectorAll('.rm-custom').forEach(btn => {
+      btn.onclick = () => {
+        const name = btn.closest('[data-custom]').dataset.custom;
+        currentTags = currentTags.filter(t => t !== name);
+        refreshCustomTags();
+      };
+    });
+  };
+  tagsRow.querySelectorAll('.tag-btn').forEach(b => {
+    b.onclick = () => {
+      const name = b.dataset.tag;
+      if (currentTags.includes(name)) currentTags = currentTags.filter(t => t !== name);
+      else currentTags.push(name);
+      refreshTagBtns();
+    };
+  });
+  const customInput = m.root.querySelector('#ip-tag-custom');
+  customInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ',' || e.key === '，') {
+      e.preventDefault();
+      const v = customInput.value.trim().replace(/[,，]/g, '');
+      if (v && !currentTags.includes(v)) {
+        currentTags.push(v);
+        refreshCustomTags();
+      }
+      customInput.value = '';
+    }
+  });
+  refreshCustomTags();
+
   m.root.querySelector('#ip-save').onclick = async () => {
     const name = nameEl.value.trim();
     if (!name) { toast('请填物品名'); return; }
@@ -2058,6 +2546,17 @@ async function openItemProcessDialog(item) {
     const expiry = expiryEl?.value || '';
     const rid = roomSel.value;
     const cabChoice = cabSel.value;
+
+    // 扩展字段
+    const openedAt       = m.root.querySelector('#ip-opened')?.value || '';
+    const openedShelfDaysRaw = m.root.querySelector('#ip-opened-days')?.value || '';
+    const openedShelfDays = openedShelfDaysRaw ? (+openedShelfDaysRaw) : null;
+    const purchasedAt    = m.root.querySelector('#ip-purchased')?.value || '';
+    const warrantyRaw    = m.root.querySelector('#ip-warranty')?.value || '';
+    const warrantyMonths = warrantyRaw ? (+warrantyRaw) : null;
+    const minStockRaw    = m.root.querySelector('#ip-minstock')?.value || '';
+    const minStock       = minStockRaw !== '' ? (+minStockRaw) : null;
+    const season         = m.root.querySelector('#ip-season')?.value || '';
 
     let targetCab;
     if (cabChoice === '__global_loose__') {
@@ -2075,10 +2574,18 @@ async function openItemProcessDialog(item) {
       qty,
       note,
       expiry,
+      tags: currentTags,
+      openedAt,
+      openedShelfDays,
+      purchasedAt,
+      warrantyMonths,
+      minStock,
+      season,
       cabinetId: targetCab.id,
       roomId: targetCab.roomId === '__global__' ? '__global__' : targetCab.roomId,
       status: 'placed',
       image: newImage || item.image,
+      lastTouchedAt: Date.now(),
     };
     await db.put('items', updated);
     toast('已归位');
@@ -2152,6 +2659,555 @@ async function renderSearch(app) {
 
   renderResults('');
   $('#q').addEventListener('input', e => renderResults(e.target.value.trim()));
+}
+
+/* ================================================================
+ * 页面：📊 总览（顶部 scene）
+ * 给出全局快照：房间/柜子/物品/紧急提醒数 + 标签分布 + 最近新增
+ * ================================================================ */
+async function renderOverview(app) {
+  const [rooms, cabinets, items, subs] = await Promise.all([
+    db.all('rooms'), db.all('cabinets'), db.all('items'), db.all('subscriptions').catch(() => []),
+  ]);
+  const placed = items.filter(i => i.status !== 'pending');
+  const pending = items.filter(i => i.status === 'pending');
+  const events = computeReminderEvents(items);
+  const subEvents = computeSubscriptionEvents(subs || []);
+  const allEvents = [...events, ...subEvents].sort((a, b) => a.daysLeft - b.daysLeft);
+  const criticalCount = allEvents.filter(e => e.level === 'critical').length;
+  const warnCount     = allEvents.filter(e => e.level === 'warn').length;
+  const totalQty = items.reduce((s, i) => s + (i.qty || 1), 0);
+
+  // 标签分布
+  const tagCount = {};
+  placed.forEach(i => (i.tags || []).forEach(t => { tagCount[t] = (tagCount[t] || 0) + 1; }));
+  const tagList = Object.entries(tagCount).sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const tagMax = tagList[0]?.[1] || 1;
+
+  // 最近新增
+  const recent = [...placed].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 8);
+
+  // 订阅概览
+  const activeSubs = (subs || []).filter(s => s.status !== 'cancelled');
+  const monthlyCost = activeSubs.reduce((s, x) => s + subscriptionMonthlyCost(x), 0);
+
+  app.innerHTML = `
+    ${header({
+      title: '📊 总览',
+      subtitle: `${rooms.length} 房间 · ${cabinets.filter(c => !isLooseCabinet(c)).length} 柜子 · ${items.length} 物品`,
+    })}
+    <div class="px-4 md:px-6 py-4 space-y-5">
+
+      <!-- 概览卡片 -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        ${[
+          { label: '物品总数', value: items.length, sub: `共 ${totalQty} 件`, color: 'from-blue-50 to-indigo-50', accent: 'text-indigo-700' },
+          { label: '紧急提醒', value: criticalCount, sub: `${warnCount} 条临近`, color: 'from-red-50 to-orange-50', accent: 'text-red-600' },
+          { label: '待归位', value: pending.length, sub: pending.length ? 'AI 识别项' : '全部完成', color: 'from-amber-50 to-yellow-50', accent: 'text-amber-700' },
+          { label: '月度订阅', value: `¥${monthlyCost.toFixed(0)}`, sub: `${activeSubs.length} 项`, color: 'from-emerald-50 to-teal-50', accent: 'text-emerald-700' },
+        ].map(c => `
+          <div class="bg-gradient-to-br ${c.color} rounded-2xl p-4 shadow-soft">
+            <div class="text-xs text-ink-500">${c.label}</div>
+            <div class="text-2xl font-bold ${c.accent} mt-1">${c.value}</div>
+            <div class="text-xs text-ink-500 mt-0.5">${c.sub}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      <!-- 标签分布 -->
+      ${tagList.length > 0 ? `
+        <section class="bg-white rounded-2xl shadow-soft p-4">
+          <h3 class="text-sm font-semibold text-ink-900 mb-3">🏷️ 标签分布</h3>
+          <div class="space-y-2">
+            ${tagList.map(([t, n]) => {
+              const preset = PRESET_TAGS.find(p => p.name === t);
+              const emoji = preset?.emoji || '•';
+              const pct = Math.round((n / tagMax) * 100);
+              return `
+                <div class="flex items-center gap-3">
+                  <div class="w-20 text-xs text-ink-700 truncate">${emoji} ${esc(t)}</div>
+                  <div class="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div class="h-full bg-brand-500 rounded-full" style="width:${pct}%"></div>
+                  </div>
+                  <div class="w-10 text-xs text-ink-500 text-right">${n}</div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </section>
+      ` : `
+        <section class="bg-white rounded-2xl shadow-soft p-6 text-center text-sm text-ink-500">
+          还没有打任何标签 · 在物品详情里给物品打标签后这里会统计分布
+        </section>
+      `}
+
+      <!-- 按房间分布 -->
+      <section class="bg-white rounded-2xl shadow-soft p-4">
+        <h3 class="text-sm font-semibold text-ink-900 mb-3">🏠 各房间物品数</h3>
+        <div class="space-y-2">
+          ${(() => {
+            const roomCounts = rooms.map(r => ({ r, n: placed.filter(i => i.roomId === r.id).length }));
+            const globalN = placed.filter(i => i.roomId === '__global__').length;
+            if (globalN) roomCounts.push({ r: { id: '__global__', name: '全屋自由区', icon: '📦' }, n: globalN });
+            roomCounts.sort((a, b) => b.n - a.n);
+            const max = roomCounts[0]?.n || 1;
+            return roomCounts.map(({ r, n }) => `
+              <button class="overview-room w-full flex items-center gap-3 text-left hover:bg-slate-50 rounded-lg p-1.5 -mx-1.5" data-id="${r.id}">
+                <div class="w-24 text-xs text-ink-700 truncate">${r.icon || '🏠'} ${esc(r.name)}</div>
+                <div class="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div class="h-full bg-emerald-500 rounded-full" style="width:${Math.round((n / max) * 100)}%"></div>
+                </div>
+                <div class="w-10 text-xs text-ink-500 text-right">${n}</div>
+              </button>
+            `).join('');
+          })()}
+        </div>
+      </section>
+
+      <!-- 最近新增 -->
+      <section class="bg-white rounded-2xl shadow-soft p-4">
+        <h3 class="text-sm font-semibold text-ink-900 mb-3">🕒 最近新增</h3>
+        ${recent.length === 0 ? `<p class="text-sm text-ink-500 py-4 text-center">还没有物品</p>` : `
+          <div class="grid grid-cols-4 md:grid-cols-8 gap-2">
+            ${recent.map(it => `
+              <div class="text-center">
+                <div class="aspect-square rounded-xl overflow-hidden bg-slate-100 shadow-sm">
+                  ${it.image ? `<img src="${blobURL(it.image, 'ov-' + it.id)}" class="w-full h-full object-cover"/>` : `<div class="w-full h-full flex items-center justify-center text-2xl">📦</div>`}
+                </div>
+                <div class="mt-1 text-xs truncate" title="${esc(it.name)}">${esc(it.name)}</div>
+              </div>
+            `).join('')}
+          </div>
+        `}
+      </section>
+    </div>
+  `;
+
+  $('.overview-room').forEach(b => {
+    b.onclick = () => {
+      const id = b.dataset.id;
+      if (id === '__global__') {
+        goScene('storage');
+        go('rooms');
+      } else {
+        go({ name: 'room', id });
+      }
+    };
+  });
+}
+
+/* ================================================================
+ * 页面：🔔 订阅（定期账单）—— 顶部 scene
+ * 管理软件订阅、贷款、水电煤、保险、会员等定期付款项。
+ * 掉款提醒 computeSubscriptionEvents 汇入待处理页。
+ * ================================================================ */
+const SUB_CATEGORIES = [
+  { id: 'software', name: '软件',   emoji: '💻' },
+  { id: 'loan',     name: '贷款',   emoji: '🏦' },
+  { id: 'utility',  name: '水电煤', emoji: '💡' },
+  { id: 'rent',     name: '房租',   emoji: '🏠' },
+  { id: 'membership', name: '会员', emoji: '🎫' },
+  { id: 'insurance',name: '保险',   emoji: '🛟' },
+  { id: 'telecom',  name: '通讯',   emoji: '📱' },
+  { id: 'other',    name: '其他',   emoji: '📌' },
+];
+
+const SUB_CYCLES = [
+  { id: 'weekly',    name: '每周',   days: 7 },
+  { id: 'monthly',   name: '每月',   days: 30 },
+  { id: 'quarterly', name: '每季',   days: 91 },
+  { id: 'yearly',    name: '每年',   days: 365 },
+];
+
+function subscriptionCycleDays(sub) {
+  const preset = SUB_CYCLES.find(c => c.id === sub.cycle);
+  if (preset) return preset.days;
+  if (sub.cycle === 'custom' && +sub.cycleDays > 0) return +sub.cycleDays;
+  return 30;
+}
+
+function subscriptionMonthlyCost(sub) {
+  const amount = +sub.amount || 0;
+  const days = subscriptionCycleDays(sub);
+  return amount * 30 / days;
+}
+
+/* 推进下次扣款日期（按 cycle 累加直到 > today） */
+function advanceSubDue(sub) {
+  if (!sub.nextDueAt) return sub;
+  const days = subscriptionCycleDays(sub);
+  let d = new Date(sub.nextDueAt + 'T00:00:00');
+  const today = new Date(); today.setHours(0,0,0,0);
+  while (d.getTime() <= today.getTime()) {
+    d = new Date(d.getTime() + days * 24 * 3600 * 1000);
+  }
+  return { ...sub, nextDueAt: d.toISOString().slice(0, 10) };
+}
+
+/* 订阅 → 提醒事件（汇入待处理） */
+function computeSubscriptionEvents(subs) {
+  const events = [];
+  const now = Date.now();
+  for (const sub of subs) {
+    if (sub.status === 'cancelled' || sub.status === 'paused') continue;
+    if (!sub.nextDueAt) continue;
+    const dueMs = new Date(sub.nextDueAt + 'T23:59:59').getTime();
+    if (isNaN(dueMs)) continue;
+    const remain = Math.ceil((dueMs - now) / (24 * 3600 * 1000));
+    if (remain > 14) continue;
+    let level = 'info';
+    if (remain < 0)       level = 'critical'; // 已逾期
+    else if (remain <= 3) level = 'critical';
+    else if (remain <= 7) level = 'warn';
+    const amount = sub.amount ? `¥${(+sub.amount).toFixed(2)}` : '';
+    events.push({
+      kind: 'subscription',
+      level,
+      subId: sub.id,
+      title: sub.name,
+      subtitle: remain < 0
+        ? `已逾期 ${-remain} 天${amount ? ` · ${amount}` : ''}`
+        : remain === 0 ? `今天扣款${amount ? ` · ${amount}` : ''}`
+        : `${remain} 天后扣款${amount ? ` · ${amount}` : ''}`,
+      daysLeft: remain,
+      icon: '💳',
+    });
+  }
+  return events;
+}
+
+async function renderSubscribe(app) {
+  const subs = await db.all('subscriptions');
+  const active = subs.filter(s => s.status !== 'cancelled');
+  const paused = subs.filter(s => s.status === 'paused');
+  const normal = subs.filter(s => s.status !== 'cancelled' && s.status !== 'paused');
+  normal.sort((a, b) => {
+    const ad = a.nextDueAt || '9999-12-31';
+    const bd = b.nextDueAt || '9999-12-31';
+    return ad.localeCompare(bd);
+  });
+
+  const monthly = active.reduce((s, x) => s + subscriptionMonthlyCost(x), 0);
+  const yearly = monthly * 12;
+
+  // 按分类分组
+  const byCategory = {};
+  active.forEach(s => {
+    const c = s.category || 'other';
+    byCategory[c] = (byCategory[c] || 0) + subscriptionMonthlyCost(s);
+  });
+
+  app.innerHTML = `
+    ${header({
+      title: '🔔 订阅',
+      subtitle: subs.length === 0 ? '管理软件订阅 / 贷款 / 水电等定期账单' : `${active.length} 项生效 · 月均 ¥${monthly.toFixed(0)}`,
+      actions: `<button id="__sub-add" class="px-3.5 md:px-4 h-9 rounded-full bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium flex items-center gap-1 shadow-soft">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        新增
+      </button>`,
+    })}
+
+    <div class="px-4 md:px-6 py-4 space-y-5">
+      ${subs.length === 0 ? `
+        <div class="text-center py-16 px-6 bg-white rounded-2xl shadow-soft">
+          <div class="text-6xl mb-3">💳</div>
+          <h2 class="text-base font-semibold text-ink-900 mb-2">管理家里的定期账单</h2>
+          <p class="text-sm text-ink-500 mb-6">软件订阅、贷款、水电煤、房租、保险……临近扣款会在「待处理」里提醒你。</p>
+          <button id="__sub-add-empty" class="px-5 h-11 rounded-full bg-brand-500 hover:bg-brand-600 text-white font-medium shadow-soft">添加第一个订阅</button>
+        </div>
+      ` : `
+        <!-- 费用卡片 -->
+        <div class="grid grid-cols-3 gap-3">
+          <div class="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl p-4 shadow-soft">
+            <div class="text-xs text-ink-500">月均支出</div>
+            <div class="text-xl font-bold text-indigo-700 mt-1">¥${monthly.toFixed(0)}</div>
+          </div>
+          <div class="bg-gradient-to-br from-purple-50 to-pink-50 rounded-2xl p-4 shadow-soft">
+            <div class="text-xs text-ink-500">年均支出</div>
+            <div class="text-xl font-bold text-purple-700 mt-1">¥${yearly.toFixed(0)}</div>
+          </div>
+          <div class="bg-gradient-to-br from-emerald-50 to-teal-50 rounded-2xl p-4 shadow-soft">
+            <div class="text-xs text-ink-500">生效订阅</div>
+            <div class="text-xl font-bold text-emerald-700 mt-1">${normal.length}</div>
+            ${paused.length ? `<div class="text-xs text-ink-500 mt-0.5">${paused.length} 已暂停</div>` : ''}
+          </div>
+        </div>
+
+        ${Object.keys(byCategory).length > 0 ? `
+          <section class="bg-white rounded-2xl shadow-soft p-4">
+            <h3 class="text-sm font-semibold text-ink-900 mb-3">分类支出（月均）</h3>
+            <div class="space-y-2">
+              ${Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([cid, cost]) => {
+                const c = SUB_CATEGORIES.find(x => x.id === cid) || { name: cid, emoji: '•' };
+                const pct = Math.round(cost / monthly * 100);
+                return `
+                  <div class="flex items-center gap-3">
+                    <div class="w-24 text-xs text-ink-700 truncate">${c.emoji} ${esc(c.name)}</div>
+                    <div class="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                      <div class="h-full bg-gradient-to-r from-brand-500 to-indigo-500 rounded-full" style="width:${pct}%"></div>
+                    </div>
+                    <div class="w-20 text-xs text-ink-500 text-right">¥${cost.toFixed(0)}</div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </section>
+        ` : ''}
+
+        <!-- 订阅列表 -->
+        <section class="bg-white rounded-2xl shadow-soft overflow-hidden">
+          <div class="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2">
+            <span class="text-sm font-semibold text-ink-900">订阅列表</span>
+            <span class="chip">${normal.length}</span>
+          </div>
+          <div class="divide-y divide-slate-100">
+            ${normal.map(s => {
+              const cat = SUB_CATEGORIES.find(c => c.id === s.category) || { name: '其他', emoji: '📌' };
+              const cyc = SUB_CYCLES.find(c => c.id === s.cycle)?.name || (s.cycle === 'custom' ? `每 ${s.cycleDays} 天` : '—');
+              const remain = s.nextDueAt ? Math.ceil((new Date(s.nextDueAt + 'T23:59:59').getTime() - Date.now()) / (24 * 3600 * 1000)) : null;
+              const remainCls = remain == null ? 'text-ink-500'
+                : remain < 0 ? 'text-red-600 font-semibold'
+                : remain <= 3 ? 'text-red-600 font-semibold'
+                : remain <= 7 ? 'text-orange-600'
+                : 'text-ink-500';
+              const remainText = remain == null ? '—'
+                : remain < 0 ? `逾期 ${-remain} 天`
+                : remain === 0 ? '今天' : `${remain} 天后`;
+              return `
+                <button class="sub-row w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left" data-id="${s.id}">
+                  <div class="w-11 h-11 rounded-xl flex items-center justify-center text-2xl flex-shrink-0" style="background:${subColorBg(s.name)}">${esc(s.icon || cat.emoji)}</div>
+                  <div class="flex-1 min-w-0">
+                    <div class="text-sm font-medium text-ink-900 truncate">${esc(s.name)}</div>
+                    <div class="text-xs text-ink-500 truncate">${cat.emoji} ${esc(cat.name)} · ${esc(cyc)}${s.note ? ' · ' + esc(s.note) : ''}</div>
+                  </div>
+                  <div class="text-right flex-shrink-0">
+                    <div class="text-sm font-semibold text-ink-900">¥${(+s.amount || 0).toFixed(2)}</div>
+                    <div class="text-xs ${remainCls} mt-0.5">${remainText}</div>
+                  </div>
+                </button>
+              `;
+            }).join('')}
+          </div>
+        </section>
+
+        ${paused.length > 0 ? `
+          <section class="bg-white rounded-2xl shadow-soft overflow-hidden opacity-75">
+            <div class="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2">
+              <span class="text-sm font-semibold text-ink-500">⏸ 已暂停</span>
+              <span class="chip">${paused.length}</span>
+            </div>
+            <div class="divide-y divide-slate-100">
+              ${paused.map(s => `
+                <button class="sub-row w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left" data-id="${s.id}">
+                  <div class="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-xl">${esc(s.icon || '📌')}</div>
+                  <div class="flex-1 min-w-0">
+                    <div class="text-sm font-medium text-ink-500 truncate">${esc(s.name)}</div>
+                    <div class="text-xs text-ink-400 truncate">已暂停</div>
+                  </div>
+                  <div class="text-sm text-ink-500">¥${(+s.amount || 0).toFixed(2)}</div>
+                </button>
+              `).join('')}
+            </div>
+          </section>
+        ` : ''}
+      `}
+    </div>
+  `;
+
+  const openNew = () => openSubscriptionDialog(null);
+  $('#__sub-add')?.addEventListener('click', openNew);
+  $('#__sub-add-empty')?.addEventListener('click', openNew);
+  $('.sub-row').forEach(b => {
+    b.onclick = async () => {
+      const s = await db.get('subscriptions', b.dataset.id);
+      if (s) openSubscriptionDialog(s);
+    };
+  });
+}
+
+function subColorBg(name) {
+  const hue = nameToHue(name || 'sub');
+  return `hsl(${hue},70%,92%)`;
+}
+
+function openSubscriptionDialog(existing) {
+  const isEdit = !!existing;
+  const s = existing || {
+    id: uid(),
+    name: '',
+    icon: '',
+    category: 'software',
+    amount: '',
+    currency: 'CNY',
+    cycle: 'monthly',
+    cycleDays: 30,
+    nextDueAt: '',
+    startedAt: new Date().toISOString().slice(0, 10),
+    endAt: '',
+    autoRenew: true,
+    paymentMethod: '',
+    url: '',
+    note: '',
+    status: 'active',
+    createdAt: Date.now(),
+  };
+
+  const m = modal(`
+    <div class="p-5 space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-semibold text-ink-900">${isEdit ? '编辑订阅' : '新增订阅'}</h3>
+        ${isEdit ? `<button id="sub-paid" class="text-xs px-3 h-7 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium">✓ 标记本期已付</button>` : ''}
+      </div>
+
+      <div class="flex items-center gap-3">
+        <div class="w-14 h-14 rounded-xl flex items-center justify-center text-3xl flex-shrink-0" style="background:${subColorBg(s.name || 'x')}">
+          <input id="sub-icon" type="text" maxlength="2" value="${esc(s.icon || '')}" placeholder="📌" class="w-full h-full text-center bg-transparent text-3xl outline-none"/>
+        </div>
+        <div class="flex-1">
+          <input id="sub-name" type="text" value="${esc(s.name)}" placeholder="订阅名，如：Netflix / 房贷"
+            class="w-full h-10 px-3 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm font-medium"/>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-xs text-ink-500">分类</label>
+          <select id="sub-category" class="w-full mt-1 h-9 px-2 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm">
+            ${SUB_CATEGORIES.map(c => `<option value="${c.id}" ${c.id === s.category ? 'selected' : ''}>${c.emoji} ${esc(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-ink-500">周期</label>
+          <select id="sub-cycle" class="w-full mt-1 h-9 px-2 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm">
+            ${SUB_CYCLES.map(c => `<option value="${c.id}" ${c.id === s.cycle ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+            <option value="custom" ${s.cycle === 'custom' ? 'selected' : ''}>自定义天数</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="sub-cycle-custom" class="${s.cycle === 'custom' ? '' : 'hidden'}">
+        <label class="text-xs text-ink-500">自定义周期(天)</label>
+        <input id="sub-cycle-days" type="number" min="1" value="${s.cycleDays || 30}" class="w-full mt-1 h-9 px-3 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm"/>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-xs text-ink-500">金额 (CNY)</label>
+          <input id="sub-amount" type="number" min="0" step="0.01" value="${esc(s.amount || '')}" placeholder="0.00"
+            class="w-full mt-1 h-9 px-3 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm"/>
+        </div>
+        <div>
+          <label class="text-xs text-ink-500">下次扣款日</label>
+          <input id="sub-due" type="date" value="${esc(s.nextDueAt || '')}"
+            class="w-full mt-1 h-9 px-3 rounded-lg bg-slate-50 border border-transparent focus:bg-white focus:border-brand-500 outline-none text-sm"/>
+        </div>
+      </div>
+
+      <details class="bg-slate-50 rounded-xl overflow-hidden">
+        <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-ink-700 hover:bg-slate-100">⚡ 更多信息</summary>
+        <div class="px-3 pb-3 pt-1 space-y-2">
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-[11px] text-ink-500">开始日期</label>
+              <input id="sub-start" type="date" value="${esc(s.startedAt || '')}" class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+            </div>
+            <div>
+              <label class="text-[11px] text-ink-500">结束日(贷款/会员)</label>
+              <input id="sub-end" type="date" value="${esc(s.endAt || '')}" class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+            </div>
+          </div>
+          <div>
+            <label class="text-[11px] text-ink-500">扣款方式</label>
+            <input id="sub-pay" type="text" value="${esc(s.paymentMethod || '')}" placeholder="招行信用卡 *1234 / 支付宝"
+              class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+          </div>
+          <div>
+            <label class="text-[11px] text-ink-500">管理链接</label>
+            <input id="sub-url" type="url" value="${esc(s.url || '')}" placeholder="https://..."
+              class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+          </div>
+          <div>
+            <label class="text-[11px] text-ink-500">备注</label>
+            <input id="sub-note" type="text" value="${esc(s.note || '')}" class="w-full mt-0.5 h-8 px-2 rounded-lg bg-white border border-slate-200 focus:border-brand-500 outline-none text-xs"/>
+          </div>
+          <label class="inline-flex items-center gap-2 text-xs text-ink-700">
+            <input id="sub-auto" type="checkbox" ${s.autoRenew ? 'checked' : ''}/> 自动续费
+          </label>
+        </div>
+      </details>
+
+      <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+        ${isEdit ? `
+          <div class="flex gap-2">
+            <button id="sub-toggle" class="text-xs px-3 h-9 rounded-lg ${s.status === 'paused' ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'}">${s.status === 'paused' ? '▶ 恢复' : '⏸ 暂停'}</button>
+            <button id="sub-del" class="text-red-500 text-xs hover:text-red-700">🗑️ 删除</button>
+          </div>
+        ` : '<div></div>'}
+        <div class="flex gap-2">
+          <button id="sub-cancel" class="h-9 px-4 rounded-lg bg-slate-100 hover:bg-slate-200 text-sm">取消</button>
+          <button id="sub-save" class="h-9 px-5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium">${isEdit ? '保存' : '创建'}</button>
+        </div>
+      </div>
+    </div>
+  `);
+
+  const cycleSel = m.root.querySelector('#sub-cycle');
+  const customWrap = m.root.querySelector('#sub-cycle-custom');
+  cycleSel.addEventListener('change', () => {
+    customWrap.classList.toggle('hidden', cycleSel.value !== 'custom');
+  });
+
+  const readForm = () => ({
+    name:         m.root.querySelector('#sub-name').value.trim(),
+    icon:         m.root.querySelector('#sub-icon').value.trim(),
+    category:     m.root.querySelector('#sub-category').value,
+    cycle:        m.root.querySelector('#sub-cycle').value,
+    cycleDays:    (+m.root.querySelector('#sub-cycle-days').value || 30),
+    amount:       +m.root.querySelector('#sub-amount').value || 0,
+    nextDueAt:    m.root.querySelector('#sub-due').value || '',
+    startedAt:    m.root.querySelector('#sub-start').value || '',
+    endAt:        m.root.querySelector('#sub-end').value || '',
+    paymentMethod: m.root.querySelector('#sub-pay').value.trim(),
+    url:          m.root.querySelector('#sub-url').value.trim(),
+    note:         m.root.querySelector('#sub-note').value.trim(),
+    autoRenew:    m.root.querySelector('#sub-auto').checked,
+  });
+
+  m.root.querySelector('#sub-cancel').onclick = () => m.close();
+
+  m.root.querySelector('#sub-save').onclick = async () => {
+    const f = readForm();
+    if (!f.name) { toast('请填写订阅名'); return; }
+    const updated = { ...s, ...f, status: s.status || 'active' };
+    await db.put('subscriptions', updated);
+    toast(isEdit ? '已保存' : '已创建');
+    m.close();
+    render();
+  };
+
+  m.root.querySelector('#sub-del')?.addEventListener('click', async () => {
+    if (!confirm(`删除订阅「${s.name}」？`)) return;
+    await db.del('subscriptions', s.id);
+    toast('已删除');
+    m.close();
+    render();
+  });
+
+  m.root.querySelector('#sub-toggle')?.addEventListener('click', async () => {
+    const next = s.status === 'paused' ? 'active' : 'paused';
+    await db.put('subscriptions', { ...s, status: next });
+    toast(next === 'paused' ? '已暂停' : '已恢复');
+    m.close();
+    render();
+  });
+
+  m.root.querySelector('#sub-paid')?.addEventListener('click', async () => {
+    const advanced = advanceSubDue(s);
+    await db.put('subscriptions', { ...advanced, lastPaidAt: new Date().toISOString().slice(0, 10) });
+    toast('已记一期 · 下次扣款日已推进');
+    m.close();
+    render();
+  });
 }
 
 /* ================================================================
@@ -3144,10 +4200,12 @@ async function openApiConfigModal() {
 /* ================================================================
  * 启动
  * ================================================================ */
-// 底部 tab
+// 底部 tab（仅 storage 场景下有效）
 document.addEventListener('click', (e) => {
-  const btn = e.target.closest('.tab-btn');
-  if (btn) go(btn.dataset.route);
+  const tbtn = e.target.closest('.tab-btn');
+  if (tbtn) { go(tbtn.dataset.route); return; }
+  const sbtn = e.target.closest('.scene-btn');
+  if (sbtn) { goScene(sbtn.dataset.scene); return; }
 });
 
 // 全局图片加载失败兜底：任何 <img> 解码失败时显示占位图
@@ -3159,11 +4217,14 @@ document.addEventListener('error', (e) => {
   }
 }, true);
 
-// 从 hash 恢复路由
+// 从 hash 恢复路由（兼容旧 hash 或顶部 scene）
 try {
   if (location.hash.length > 1) {
     const r = JSON.parse(decodeURIComponent(location.hash.slice(1)));
-    if (r && r.name) state.route = r;
+    if (r && r.name) {
+      if (STORAGE_ROUTES.has(r.name)) { state.scene = 'storage'; state.route = r; }
+      else if (TOP_SCENES.has(r.name)) { state.scene = r.name; }
+    }
   }
 } catch {}
 

@@ -110,7 +110,52 @@
     }
     .toast.show { opacity: 1; }
 
-    /* tab bar：常驻底部 */
+    /* 顶部场景 tab —— 跨场景切换（收纳 / 待处理 / 总览 / 订阅 / 设置） */
+    .scenebar {
+      position: sticky;
+      top: 0;
+      z-index: 45;
+      background: rgba(255,255,255,0.95);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid #e2e8f0;
+      padding-top: env(safe-area-inset-top, 0);
+    }
+    .scene-btn {
+      position: relative;
+      flex: 1;
+      padding: 10px 4px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #64748b;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      transition: color .15s;
+    }
+    .scene-btn.active { color: #5b6cff; }
+    .scene-btn.active::after {
+      content: '';
+      position: absolute; left: 20%; right: 20%; bottom: 0;
+      height: 2.5px; border-radius: 2px;
+      background: #5b6cff;
+    }
+    .scene-btn .icon { font-size: 18px; line-height: 1; }
+    .scene-btn .badge {
+      position: absolute; top: 6px; right: 20%;
+      min-width: 16px; height: 16px; padding: 0 4px;
+      border-radius: 999px; background: #ef4444; color: #fff;
+      font-size: 10px; font-weight: 600; line-height: 16px;
+      box-shadow: 0 1px 3px rgba(239,68,68,0.4);
+    }
+    @media (min-width: 768px) {
+      .scene-btn { flex: 0 0 auto; padding: 12px 18px 14px; flex-direction: row; font-size: 13px; gap: 6px; }
+      .scene-btn .icon { font-size: 16px; }
+      .scene-btn .badge { position: static; margin-left: 4px; }
+      .scene-btn.active::after { left: 12px; right: 12px; }
+    }
+
+    /* tab bar：常驻底部（仅在「收纳」场景出现） */
     .tabbar {
       position: fixed;
       left: 0; right: 0; bottom: 0;
@@ -119,7 +164,9 @@
       border-top: 1px solid #e2e8f0;
       z-index: 40;
       padding-bottom: env(safe-area-inset-bottom, 0);
+      transition: transform .2s;
     }
+    .tabbar.hidden { transform: translateY(100%); pointer-events: none; }
     @media (min-width: 768px) {
       .tabbar {
         /* 桌面端仍然底部常驻，但做成悬浮胶囊样式 */
@@ -249,10 +296,32 @@
   </style>
 </head>
 <body class="min-h-full">
+  <!-- 顶部场景 tab（跨场景切换） -->
+  <nav class="scenebar">
+    <div class="max-w-5xl mx-auto flex md:justify-center">
+      <button data-scene="storage" class="scene-btn">
+        <span class="icon">📦</span><span>收纳</span>
+      </button>
+      <button data-scene="inbox" class="scene-btn">
+        <span class="icon">📥</span><span>待处理</span>
+        <span id="scene-inbox-badge" class="badge hidden">0</span>
+      </button>
+      <button data-scene="overview" class="scene-btn">
+        <span class="icon">📊</span><span>总览</span>
+      </button>
+      <button data-scene="subscribe" class="scene-btn">
+        <span class="icon">🔔</span><span>订阅</span>
+      </button>
+      <button data-scene="settings" class="scene-btn">
+        <span class="icon">⚙️</span><span>设置</span>
+      </button>
+    </div>
+  </nav>
+
   <div id="app" class="max-w-5xl mx-auto pb-24 md:pb-28"></div>
 
-  <!-- Bottom nav -->
-  <nav class="tabbar">
+  <!-- Bottom nav（仅在「收纳」场景显示） -->
+  <nav class="tabbar" id="__tabbar">
     <div class="max-w-5xl mx-auto flex md:justify-center md:gap-2 md:border md:rounded-2xl md:bg-white md:shadow-soft md:p-1">
       <button data-route="rooms"  class="tab-btn flex-1 md:flex-none md:px-6 py-3 md:py-2 md:rounded-xl text-sm font-medium text-ink-500">
         🏠 房间
@@ -260,17 +329,8 @@
       <button data-route="items"  class="tab-btn flex-1 md:flex-none md:px-6 py-3 md:py-2 md:rounded-xl text-sm font-medium text-ink-500">
         📦 物品
       </button>
-      <button data-route="inbox"  class="tab-btn flex-1 md:flex-none md:px-6 py-3 md:py-2 md:rounded-xl text-sm font-medium text-ink-500 relative">
-        <span class="relative inline-block">
-          📥 待处理
-          <span id="inbox-badge" class="hidden absolute -top-2 -right-3 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] leading-[18px] text-center font-semibold shadow">0</span>
-        </span>
-      </button>
       <button data-route="search" class="tab-btn flex-1 md:flex-none md:px-6 py-3 md:py-2 md:rounded-xl text-sm font-medium text-ink-500">
         🔍 搜索
-      </button>
-      <button data-route="settings" class="tab-btn flex-1 md:flex-none md:px-6 py-3 md:py-2 md:rounded-xl text-sm font-medium text-ink-500">
-        ⚙️ 设置
       </button>
     </div>
   </nav>
