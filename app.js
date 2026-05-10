@@ -1031,7 +1031,7 @@ async function render() {
   app.innerHTML = '<div class="p-8 text-center text-ink-500">加载中…</div>';
 
   // 顶部 scene tab 高亮
-  $('.scene-btn').forEach(b => {
+  $$('.scene-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.scene === state.scene);
   });
 
@@ -1040,7 +1040,7 @@ async function render() {
   if (tabbar) tabbar.classList.toggle('hidden', state.scene !== 'storage');
 
   // 底部 tab 高亮（仅 storage 场景）
-  $('.tab-btn').forEach(b => {
+  $$('.tab-btn').forEach(b => {
     const active = state.scene === 'storage' && (
          b.dataset.route === state.route.name
       || (state.route.name === 'room' && b.dataset.route === 'rooms')
@@ -2218,19 +2218,19 @@ async function renderInbox(app) {
     </div>
   `;
 
-  $('.inbox-card').forEach(b => {
+  $$('.inbox-card').forEach(b => {
     b.onclick = () => {
       const item = pending.find(x => x.id === b.dataset.iid);
       if (item) openItemProcessDialog(item);
     };
   });
-  $('.event-row').forEach(b => {
+  $$('.event-row').forEach(b => {
     b.onclick = async () => {
       const item = await db.get('items', b.dataset.iid);
       if (item) openItemProcessDialog(item);
     };
   });
-  $('.sub-event-row').forEach(b => {
+  $$('.sub-event-row').forEach(b => {
     b.onclick = async () => {
       const sub = await db.get('subscriptions', b.dataset.sid);
       if (sub) openSubscriptionDialog(sub);
@@ -2783,7 +2783,7 @@ async function renderOverview(app) {
     </div>
   `;
 
-  $('.overview-room').forEach(b => {
+  $$('.overview-room').forEach(b => {
     b.onclick = () => {
       const id = b.dataset.id;
       if (id === '__global__') {
@@ -3017,7 +3017,7 @@ async function renderSubscribe(app) {
   const openNew = () => openSubscriptionDialog(null);
   $('#__sub-add')?.addEventListener('click', openNew);
   $('#__sub-add-empty')?.addEventListener('click', openNew);
-  $('.sub-row').forEach(b => {
+  $$('.sub-row').forEach(b => {
     b.onclick = async () => {
       const s = await db.get('subscriptions', b.dataset.id);
       if (s) openSubscriptionDialog(s);
