@@ -10,19 +10,23 @@ interface StatCardProps {
   icon: Parameters<typeof PinIcon>[0]['name'];
   label: string;
   value: number | string;
-  from: string;
-  to: string;
+  prefix?: string;
 }
 
-function StatCard({ icon, label, value, from, to }: StatCardProps) {
+function StatCard({ icon, label, value, prefix }: StatCardProps) {
   return (
-    <div
-      className="rounded-2xl p-4 text-white shadow-soft"
-      style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
-    >
-      <PinIcon name={icon} size={54} className="mb-2" />
-      <div className="text-2xl font-bold">{value}</div>
-      <div className="text-xs opacity-90 mt-0.5">{label}</div>
+    <div className="bg-white rounded-2xl shadow-soft p-4 flex flex-col gap-2">
+      <div className="flex items-start justify-between">
+        <PinIcon name={icon} size={40} />
+        <span className="eyebrow text-[9.5px]">{label.split(' · ')[0]}</span>
+      </div>
+      <div>
+        <div className="font-display text-3xl text-ink-900 leading-none tabular-nums">
+          {prefix && <span className="text-ink-400 mr-0.5 text-2xl">{prefix}</span>}
+          {value}
+        </div>
+        <div className="text-[11.5px] text-ink-500 mt-1.5">{label}</div>
+      </div>
     </div>
   );
 }
@@ -70,35 +74,28 @@ export default function OverviewPage() {
     <div>
       <Header title="总览" subtitle="一眼看清家中库存" />
 
-      <div className="px-4 md:px-6 py-4">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      <div className="py-4 md:py-5">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 md:gap-3 mb-6">
           <StatCard
             icon="items"
             label={`物品总数 · ${totalQty} 件`}
             value={placedItems.length}
-            from="#6366f1"
-            to="#8b5cf6"
           />
           <StatCard
             icon="spark"
             label="紧急提醒"
             value={urgentCount}
-            from="#10b981"
-            to="#14b8a6"
           />
           <StatCard
             icon="inbox"
             label="待归位"
             value={pendingCount}
-            from="#f59e0b"
-            to="#f97316"
           />
           <StatCard
             icon="subscribe"
-            label="订阅月度 ¥"
+            label="订阅月度"
             value={monthlySub.toFixed(0)}
-            from="#ec4899"
-            to="#f43f5e"
+            prefix="¥"
           />
         </div>
 
@@ -118,9 +115,9 @@ export default function OverviewPage() {
                         {n} · {pct}%
                       </span>
                     </div>
-                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
+                    <div className="h-1 bg-paper-200 rounded-full overflow-hidden mt-1.5">
                       <div
-                        className="h-full bg-gradient-to-r from-brand-500 to-purple-500"
+                        className="h-full bg-clay-500 rounded-full"
                         style={{ width: `${pct}%` }}
                       />
                     </div>
@@ -141,8 +138,8 @@ export default function OverviewPage() {
                     <span>{room!.name}</span>
                     <span className="text-ink-500">{count} 件</span>
                   </div>
-                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-gradient-to-r from-emerald-500 to-teal-500" style={{ width: `${Math.round((count / Math.max(1, placedItems.length)) * 100)}%` }} />
+                  <div className="h-1 bg-paper-200 rounded-full overflow-hidden mt-1.5">
+                    <div className="h-full bg-moss-500 rounded-full" style={{ width: `${Math.round((count / Math.max(1, placedItems.length)) * 100)}%` }} />
                   </div>
                 </button>
               ))}
