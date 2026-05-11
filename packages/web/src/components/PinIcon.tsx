@@ -12,6 +12,17 @@ import settingsIcon from '../assets/pin-icons/settings.png';
 import sparkIcon from '../assets/pin-icons/spark.png';
 import subscribeIcon from '../assets/pin-icons/subscribe.png';
 import trashIcon from '../assets/pin-icons/trash.png';
+// Room icons (sliced from the new icon sheet)
+import roomSofa from '../assets/pin-icons/rooms/sofa.png';
+import roomBed from '../assets/pin-icons/rooms/bed.png';
+import roomKitchen from '../assets/pin-icons/rooms/kitchen.png';
+import roomStudy from '../assets/pin-icons/rooms/study.png';
+import roomBathroom from '../assets/pin-icons/rooms/bathroom.png';
+import roomBathroom2 from '../assets/pin-icons/rooms/bathroom2.png';
+import roomWardrobe from '../assets/pin-icons/rooms/wardrobe.png';
+import roomWardrobe2 from '../assets/pin-icons/rooms/wardrobe2.png';
+import roomKids from '../assets/pin-icons/rooms/kids.png';
+import roomBalcony from '../assets/pin-icons/rooms/balcony.png';
 
 export type PinIconName =
   | 'storage'
@@ -36,7 +47,17 @@ export type PinIconName =
   | 'book'
   | 'ai'
   | 'add'
-  | 'back';
+  | 'back'
+  | 'room-sofa'
+  | 'room-bed'
+  | 'room-kitchen'
+  | 'room-study'
+  | 'room-bathroom'
+  | 'room-bathroom2'
+  | 'room-wardrobe'
+  | 'room-wardrobe2'
+  | 'room-kids'
+  | 'room-balcony';
 
 interface Props {
   name: PinIconName;
@@ -51,11 +72,11 @@ const ICONS: Record<PinIconName, string> = {
   overview: overviewIcon,
   subscribe: subscribeIcon,
   settings: settingsIcon,
-  room: boxIcon,
+  room: roomSofa,
   items: boxIcon,
   search: searchIcon,
   box: boxIcon,
-  cabinet: boxIcon,
+  cabinet: roomWardrobe2,
   camera: cameraIcon,
   gallery: galleryIcon,
   edit: editIcon,
@@ -69,6 +90,16 @@ const ICONS: Record<PinIconName, string> = {
   ai: sparkIcon,
   add: addIcon,
   back: backIcon,
+  'room-sofa': roomSofa,
+  'room-bed': roomBed,
+  'room-kitchen': roomKitchen,
+  'room-study': roomStudy,
+  'room-bathroom': roomBathroom,
+  'room-bathroom2': roomBathroom2,
+  'room-wardrobe': roomWardrobe,
+  'room-wardrobe2': roomWardrobe2,
+  'room-kids': roomKids,
+  'room-balcony': roomBalcony,
 };
 
 export function PinIcon({ name, size = 42, className = '', tile: _tile = true }: Props) {
@@ -81,6 +112,32 @@ export function PinIcon({ name, size = 42, className = '', tile: _tile = true }:
       <img src={ICONS[name]} alt="" draggable={false} />
     </span>
   );
+}
+
+// Maps the (legacy) emoji-based room.icon strings to a PinIconName so the
+// freshly sliced room icon set can be used everywhere a room appears.
+const EMOJI_TO_ROOM_ICON: Record<string, PinIconName> = {
+  '🛋️': 'room-sofa',
+  '🛋': 'room-sofa',
+  '🛏️': 'room-bed',
+  '🛏': 'room-bed',
+  '🍳': 'room-kitchen',
+  '🚿': 'room-bathroom',
+  '🛁': 'room-bathroom2',
+  '📚': 'room-study',
+  '🧑‍💻': 'room-study',
+  '💻': 'room-study',
+  '👕': 'room-wardrobe',
+  '👚': 'room-wardrobe2',
+  '🧸': 'room-kids',
+  '🧺': 'room-balcony',
+  '🪴': 'room-balcony',
+  '🏠': 'room-sofa',
+};
+
+export function roomIconName(icon?: string): PinIconName {
+  if (!icon) return 'room-sofa';
+  return EMOJI_TO_ROOM_ICON[icon] ?? 'room-sofa';
 }
 
 export function titleIcon(title: string): PinIconName {

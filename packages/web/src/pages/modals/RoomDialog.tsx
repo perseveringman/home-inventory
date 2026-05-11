@@ -7,7 +7,7 @@ import {
 } from '@home-inventory/core';
 import { useStore } from '../../stores/useStore';
 import { toast } from '../../components/Toast';
-import { PinIcon } from '../../components/PinIcon';
+import { PinIcon, roomIconName } from '../../components/PinIcon';
 
 interface Props {
   room?: Room;
@@ -59,7 +59,7 @@ export default function RoomDialog({ room, onDone, onClose }: Props) {
                 onClick={() => pickPreset(p)}
                 className="py-3 rounded-xl border border-slate-200 hover:border-brand-500 hover:bg-brand-50 flex flex-col items-center gap-1"
               >
-                <PinIcon name="room" size={38} />
+                <PinIcon name={roomIconName(p.icon)} size={38} />
                 <span className="text-xs text-ink-700">{p.name}</span>
               </button>
             ))}
@@ -87,7 +87,7 @@ export default function RoomDialog({ room, onDone, onClose }: Props) {
                 : 'border-slate-200 hover:bg-slate-50'
             }`}
           >
-            <PinIcon name="room" size={34} />
+            <PinIcon name={roomIconName(i)} size={34} />
           </button>
         ))}
       </div>

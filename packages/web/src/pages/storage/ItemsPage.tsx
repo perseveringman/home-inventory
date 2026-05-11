@@ -8,7 +8,7 @@ import { openModal } from '../../components/Modal';
 import { toast } from '../../components/Toast';
 import { useStore } from '../../stores/useStore';
 import ItemDialog from '../modals/ItemDialog';
-import { PinIcon } from '../../components/PinIcon';
+import { PinIcon, roomIconName } from '../../components/PinIcon';
 
 type FilterKey = 'placed' | 'pending' | string;
 
@@ -76,7 +76,7 @@ export default function ItemsPage() {
               return (
                 <section key={roomId}>
                   <button onClick={() => room && navigate(`/room/${room.id}`)} className="font-semibold mb-2 text-left">
-                    <span className="inline-flex items-center gap-2"><PinIcon name={room ? 'room' : 'box'} size={28} />{room ? room.name : '全屋自由区'}</span>
+                    <span className="inline-flex items-center gap-2"><PinIcon name={room ? roomIconName(room.icon) : 'box'} size={28} />{room ? room.name : '全屋自由区'}</span>
                   </button>
                   <div className="space-y-3">
                     {Array.from(cabinetMap.entries()).map(([cabinetId, list]) => {

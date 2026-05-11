@@ -9,7 +9,7 @@ import { GLOBAL_ROOM_ID, type Room } from '@home-inventory/core';
 import { BlobImage } from '../../components/BlobImage';
 import { RoomMenu } from '../../components/RoomMenu';
 import LooseListDialog from '../modals/LooseListDialog';
-import { PinIcon } from '../../components/PinIcon';
+import { PinIcon, roomIconName } from '../../components/PinIcon';
 
 export default function RoomsPage() {
   const navigate = useNavigate();
@@ -99,7 +99,7 @@ export default function RoomsPage() {
                     {s.cover ? (
                       <BlobImage blob={s.cover.blob} className="w-full h-full object-cover" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center"><PinIcon name="room" size={96} /></div>
+                      <div className="w-full h-full flex items-center justify-center"><PinIcon name={roomIconName(r.icon)} size={96} /></div>
                     )}
                     <button
                       className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 text-ink-500 hover:text-ink-900 shadow"

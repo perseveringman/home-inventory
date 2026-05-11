@@ -1,5 +1,5 @@
 import type { Room } from '@home-inventory/core';
-import { PinIcon } from './PinIcon';
+import { PinIcon, roomIconName } from './PinIcon';
 
 interface Props {
   room: Room;
@@ -13,7 +13,7 @@ export function RoomMenu({ room, onEdit, onDelete, onClose }: Props) {
     <div className="p-5">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-lg font-semibold inline-flex items-center gap-2"><PinIcon name="room" size={30} />{room.name}</h3>
+          <h3 className="text-lg font-semibold inline-flex items-center gap-2"><PinIcon name={roomIconName(room.icon)} size={30} />{room.name}</h3>
           <p className="text-xs text-ink-500 mt-0.5">选择要执行的操作</p>
         </div>
         <button onClick={onClose} className="text-ink-500 hover:text-ink-900 text-xl">×</button>
