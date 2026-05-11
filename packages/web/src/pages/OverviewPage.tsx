@@ -1,11 +1,13 @@
 import { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useStore } from '../stores/useStore';
 import { Header } from '../components/Header';
 import { BlobImage } from '../components/BlobImage';
-import { PRESET_TAGS } from '@home-inventory/core';
+import { computeItemEvents, PRESET_TAGS, subscriptionMonthlyCost } from '@home-inventory/core';
+import { PinIcon } from '../components/PinIcon';
 
 interface StatCardProps {
-  icon: string;
+  icon: Parameters<typeof PinIcon>[0]['name'];
   label: string;
   value: number | string;
   from: string;
@@ -18,7 +20,7 @@ function StatCard({ icon, label, value, from, to }: StatCardProps) {
       className="rounded-2xl p-4 text-white shadow-soft"
       style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
     >
-      <div className="text-2xl mb-1 opacity-90">{icon}</div>
+      <PinIcon name={icon} size={54} className="mb-2" />
       <div className="text-2xl font-bold">{value}</div>
       <div className="text-xs opacity-90 mt-0.5">{label}</div>
     </div>
@@ -26,19 +28,26 @@ function StatCard({ icon, label, value, from, to }: StatCardProps) {
 }
 
 export default function OverviewPage() {
+  const navigate = useNavigate();
   const rooms = useStore((s) => s.rooms);
   const items = useStore((s) => s.items);
   const cabinets = useStore((s) => s.cabinets);
+  const subscriptions = useStore((s) => s.subscriptions);
+  const placedItems = items.filter((item) => item.status !== 'pending');
+  const pendingCount = items.length - placedItems.length;
+  const urgentCount = computeItemEvents(items).filter((event) => event.level === 'critical').length;
+  const monthlySub = subscriptions.filter((sub) => sub.status === 'active').reduce((sum, sub) => sum + subscriptionMonthlyCost(sub), 0);
+  const totalQty = placedItems.reduce((sum, item) => sum + (item.qty || 1), 0);
 
   const tagDist = useMemo(() => {
     const m = new Map<string, number>();
-    items.forEach((i) => i.tags?.forEach((t) => m.set(t, (m.get(t) || 0) + 1)));
+    placedItems.forEach((i) => i.tags?.forEach((t) => m.set(t, (m.get(t) || 0) + 1)));
     return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
-  }, [items]);
+  }, [placedItems]);
 
   const roomDist = useMemo(() => {
     const m = new Map<string, number>();
-    items.forEach((i) => m.set(i.roomId, (m.get(i.roomId) || 0) + 1));
+    placedItems.forEach((i) => m.set(i.roomId, (m.get(i.roomId) || 0) + 1));
     return Array.from(m.entries())
       .map(([rid, n]) => {
         const r = rooms.find((x) => x.id === rid);
@@ -46,51 +55,48 @@ export default function OverviewPage() {
       })
       .filter((x) => x.room)
       .sort((a, b) => b.count - a.count);
-  }, [items, rooms]);
+  }, [placedItems, rooms]);
 
   const recent = useMemo(
     () =>
-      items
+      placedItems
         .slice()
         .sort((a, b) => b.createdAt - a.createdAt)
         .slice(0, 12),
-    [items]
+    [placedItems]
   );
-
-  const tagEmoji = (t: string) =>
-    PRESET_TAGS.find((p) => p.name === t)?.emoji || '🏷️';
 
   return (
     <div>
-      <Header title="📊 总览" subtitle="一眼看清家中库存" />
+      <Header title="总览" subtitle="一眼看清家中库存" />
 
       <div className="px-4 md:px-6 py-4">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           <StatCard
-            icon="📦"
-            label="物品总数"
-            value={items.length}
+            icon="items"
+            label={`物品总数 · ${totalQty} 件`}
+            value={placedItems.length}
             from="#6366f1"
             to="#8b5cf6"
           />
           <StatCard
-            icon="🏠"
-            label="房间数"
-            value={rooms.length}
+            icon="spark"
+            label="紧急提醒"
+            value={urgentCount}
             from="#10b981"
             to="#14b8a6"
           />
           <StatCard
-            icon="🗄️"
-            label="柜子数"
-            value={cabinets.length}
+            icon="inbox"
+            label="待归位"
+            value={pendingCount}
             from="#f59e0b"
             to="#f97316"
           />
           <StatCard
-            icon="🏷️"
-            label="标签种类"
-            value={tagDist.length}
+            icon="subscribe"
+            label="订阅月度 ¥"
+            value={monthlySub.toFixed(0)}
             from="#ec4899"
             to="#f43f5e"
           />
@@ -98,15 +104,15 @@ export default function OverviewPage() {
 
         {tagDist.length > 0 && (
           <section className="mb-6">
-            <h2 className="font-semibold mb-3">🏷️ 标签分布</h2>
+            <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="tag" size={28} /> 标签分布</h2>
             <div className="bg-white rounded-2xl shadow-soft p-4 space-y-2">
               {tagDist.slice(0, 12).map(([t, n]) => {
-                const pct = Math.round((n / items.length) * 100);
+                const pct = Math.round((n / Math.max(1, placedItems.length)) * 100);
                 return (
                   <div key={t}>
                     <div className="flex justify-between text-sm">
                       <span>
-                        {tagEmoji(t)} {t}
+                        {PRESET_TAGS.find((p) => p.name === t)?.name || t}
                       </span>
                       <span className="text-ink-500">
                         {n} · {pct}%
@@ -127,14 +133,18 @@ export default function OverviewPage() {
 
         {roomDist.length > 0 && (
           <section className="mb-6">
-            <h2 className="font-semibold mb-3">🏠 房间分布</h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="room" size={28} /> 房间分布</h2>
+            <div className="bg-white rounded-2xl shadow-soft p-4 space-y-3">
               {roomDist.map(({ room, count }) => (
-                <div key={room!.id} className="bg-white rounded-2xl shadow-soft p-4">
-                  <div className="text-3xl mb-1">{room!.icon}</div>
-                  <div className="font-medium">{room!.name}</div>
-                  <div className="text-sm text-ink-500">{count} 件物品</div>
-                </div>
+                <button key={room!.id} onClick={() => navigate(`/room/${room!.id}`)} className="w-full text-left">
+                  <div className="flex justify-between text-sm">
+                    <span>{room!.name}</span>
+                    <span className="text-ink-500">{count} 件</span>
+                  </div>
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
+                    <div className="h-full bg-gradient-to-r from-emerald-500 to-teal-500" style={{ width: `${Math.round((count / Math.max(1, placedItems.length)) * 100)}%` }} />
+                  </div>
+                </button>
               ))}
             </div>
           </section>
@@ -142,7 +152,7 @@ export default function OverviewPage() {
 
         {recent.length > 0 && (
           <section>
-            <h2 className="font-semibold mb-3">🆕 最近新增</h2>
+            <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="spark" size={28} /> 最近新增</h2>
             <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
               {recent.map((it) => (
                 <div
@@ -152,7 +162,7 @@ export default function OverviewPage() {
                 >
                   <BlobImage
                     blob={it.image || null}
-                    emoji={it.aiEmoji || '📦'}
+                    emoji={it.aiEmoji || 'box'}
                     className="w-full aspect-square rounded-lg object-cover"
                   />
                   <div className="text-xs font-medium truncate mt-1">{it.name}</div>

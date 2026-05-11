@@ -22,7 +22,7 @@ const SEASON_MONTHS: Record<string, number[]> = {
 
 export function seasonLabel(s: string): string {
   return (
-    ({ spring: '🌸 春季', summer: '☀️ 夏季', autumn: '🍂 秋季', winter: '❄️ 冬季' } as Record<
+    ({ spring: '春季', summer: '夏季', autumn: '秋季', winter: '冬季' } as Record<
       string,
       string
     >)[s] || s

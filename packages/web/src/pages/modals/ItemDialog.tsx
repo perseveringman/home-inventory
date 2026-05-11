@@ -1,16 +1,20 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import {
+  GLOBAL_ROOM_ID,
   PRESET_TAGS,
-  type Item,
-  type Cabinet,
-  type Season,
-  uid,
   compressImage,
+  ensureGlobalLooseCabinet,
+  ensureLooseCabinet,
+  expiryInfo,
   generateItemThumb,
+  uid,
+  type Item,
+  type Season,
 } from '@home-inventory/core';
-import { useStore } from '../../stores/useStore';
-import { toast } from '../../components/Toast';
 import { BlobImage } from '../../components/BlobImage';
+import { toast } from '../../components/Toast';
+import { getStorage, useStore } from '../../stores/useStore';
+import { PinIcon } from '../../components/PinIcon';
 
 interface Props {
   item?: Item;
@@ -21,21 +25,20 @@ interface Props {
 
 const SEASONS: Array<{ id: Season; label: string }> = [
   { id: '', label: '无' },
-  { id: 'spring', label: '🌸 春' },
-  { id: 'summer', label: '☀️ 夏' },
-  { id: 'autumn', label: '🍂 秋' },
-  { id: 'winter', label: '❄️ 冬' },
+  { id: 'spring', label: '春' },
+  { id: 'summer', label: '夏' },
+  { id: 'autumn', label: '秋' },
+  { id: 'winter', label: '冬' },
 ];
 
-export default function ItemDialog({
-  item,
-  defaultCabinetId,
-  defaultRoomId,
-  onClose,
-}: Props) {
+export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onClose }: Props) {
   const put = useStore((s) => s.put);
+  const del = useStore((s) => s.del);
   const cabinets = useStore((s) => s.cabinets);
   const rooms = useStore((s) => s.rooms);
+  const photos = useStore((s) => s.photos);
+  const initialCabinet = cabinets.find((c) => c.id === (item?.cabinetId || defaultCabinetId));
+  const initialRoomId = item?.roomId || defaultRoomId || initialCabinet?.roomId || GLOBAL_ROOM_ID;
 
   const [name, setName] = useState(item?.name || '');
   const [qty, setQty] = useState(item?.qty ?? 1);
@@ -43,75 +46,75 @@ export default function ItemDialog({
   const [expiry, setExpiry] = useState(item?.expiry || '');
   const [tags, setTags] = useState<string[]>(item?.tags || []);
   const [customTag, setCustomTag] = useState('');
-
+  const [roomId, setRoomId] = useState(initialRoomId);
   const [cabinetId, setCabinetId] = useState(
-    item?.cabinetId || defaultCabinetId || ''
+    item?.cabinetId || defaultCabinetId || (initialRoomId === GLOBAL_ROOM_ID ? '__global_loose__' : '__room_loose__')
   );
   const [blob, setBlob] = useState<Blob | null>(item?.image || null);
-
-  // 扩展字段
   const [showMore, setShowMore] = useState(false);
   const [openedAt, setOpenedAt] = useState(item?.openedAt || '');
-  const [openedShelfDays, setOpenedShelfDays] = useState(
-    item?.openedShelfDays ? String(item.openedShelfDays) : ''
-  );
+  const [openedShelfDays, setOpenedShelfDays] = useState(item?.openedShelfDays ? String(item.openedShelfDays) : '');
   const [purchasedAt, setPurchasedAt] = useState(item?.purchasedAt || '');
-  const [warrantyMonths, setWarrantyMonths] = useState(
-    item?.warrantyMonths ? String(item.warrantyMonths) : ''
-  );
-  const [minStock, setMinStock] = useState(
-    item?.minStock != null ? String(item.minStock) : ''
-  );
+  const [warrantyMonths, setWarrantyMonths] = useState(item?.warrantyMonths ? String(item.warrantyMonths) : '');
+  const [minStock, setMinStock] = useState(item?.minStock != null ? String(item.minStock) : '');
   const [season, setSeason] = useState<Season>(item?.season || '');
 
-  const toggleTag = (t: string) => {
-    setTags((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
+  const roomCabinets = cabinets
+    .filter((c) => c.roomId === roomId && (!c.type || c.type === 'normal'))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const sourcePhoto = item?.sourcePhotoId ? photos.find((p) => p.id === item.sourcePhotoId) : null;
+  const expiryPreview = expiryInfo(expiry);
+
+  const toggleTag = (tag: string) => {
+    setTags((cur) => (cur.includes(tag) ? cur.filter((x) => x !== tag) : [...cur, tag]));
   };
+
   const addCustomTag = () => {
-    const t = customTag.trim();
-    if (!t) return;
-    if (!tags.includes(t)) setTags([...tags, t]);
+    const tag = customTag.trim().replace(/[,，]$/, '');
+    if (!tag) return;
+    if (!tags.includes(tag)) setTags((cur) => [...cur, tag]);
     setCustomTag('');
   };
 
   const pickPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const { blob: b } = await compressImage(f, 800, 0.78);
-    setBlob(b);
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const { blob: compressed } = await compressImage(file, 800, 0.78);
+    setBlob(compressed);
+  };
+
+  const resolveCabinet = async () => {
+    const storage = getStorage();
+    if (cabinetId === '__global_loose__') return ensureGlobalLooseCabinet(storage);
+    if (cabinetId === '__room_loose__') return ensureLooseCabinet(storage, roomId);
+    return cabinets.find((c) => c.id === cabinetId);
   };
 
   const save = async () => {
-    const n = name.trim();
-    if (!n) {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
       toast('请输入名称');
       return;
     }
-    if (!cabinetId) {
+    const cabinet = await resolveCabinet();
+    if (!cabinet) {
       toast('请选择柜子');
       return;
     }
-    const cab = cabinets.find((c) => c.id === cabinetId);
-    if (!cab) {
-      toast('柜子不存在');
-      return;
-    }
-    let finalBlob = blob;
-    if (!finalBlob && !item?.image) {
-      finalBlob = await generateItemThumb(n, '📦');
-    }
-
-    const obj: Item = {
+    if (cabinet.type === 'loose' || cabinet.type === 'loose-global') await put('cabinets', cabinet);
+    const image = blob || item?.image || (await generateItemThumb(trimmedName, item?.aiEmoji || 'box'));
+    const next: Item = {
       id: item?.id || uid(),
-      cabinetId,
-      roomId: cab.roomId,
-      name: n,
+      cabinetId: cabinet.id,
+      roomId: cabinet.roomId,
+      name: trimmedName,
       qty: +qty || 1,
       note: note.trim(),
       tags,
-      image: finalBlob || undefined,
+      image,
       expiry: expiry || undefined,
-      status: item?.status || 'placed',
+      status: item?.status === 'pending' ? 'placed' : item?.status || 'placed',
       source: item?.source || 'manual',
       sourcePhotoId: item?.sourcePhotoId,
       aiEmoji: item?.aiEmoji,
@@ -125,8 +128,16 @@ export default function ItemDialog({
       createdAt: item?.createdAt || Date.now(),
       lastTouchedAt: Date.now(),
     };
-    await put('items', obj);
-    toast(item ? '已更新' : '已添加');
+    await put('items', next);
+    toast(item?.status === 'pending' ? '已保存并归位' : item ? '已更新' : '已添加');
+    onClose();
+  };
+
+  const remove = async () => {
+    if (!item) return;
+    if (!confirm(`删除物品「${item.name}」？`)) return;
+    await del('items', item.id);
+    toast('已删除');
     onClose();
   };
 
@@ -134,103 +145,82 @@ export default function ItemDialog({
     <div className="p-5">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold">{item ? '编辑物品' : '新增物品'}</h3>
-        <button onClick={onClose} className="text-ink-500 hover:text-ink-900 text-xl">
-          ×
-        </button>
+        <button onClick={onClose} className="text-ink-500 hover:text-ink-900 text-xl">×</button>
       </div>
 
       <div className="space-y-3">
         <div>
           <label className="block text-sm font-medium mb-1">名称</label>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full border border-slate-200 rounded-lg px-3 py-2"
-            placeholder="例如：维生素 C"
-          />
+          <input value={name} onChange={(e) => setName(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2" placeholder="例如：维生素 C" />
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm font-medium mb-1">数量</label>
-            <input
-              type="number"
-              value={qty}
-              onChange={(e) => setQty(+e.target.value || 1)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2"
-            />
+            <input type="number" value={qty} onChange={(e) => setQty(+e.target.value || 1)} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">保质期</label>
-            <input
-              type="date"
-              value={expiry}
-              onChange={(e) => setExpiry(e.target.value)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2"
-            />
+            <div className="flex gap-1">
+              <input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} className="flex-1 min-w-0 border border-slate-200 rounded-lg px-3 py-2" />
+              {expiry && <button onClick={() => setExpiry('')} className="px-2 rounded-lg bg-slate-100 text-xs">清除</button>}
+            </div>
+            {expiryPreview && <span className={`inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded border ${expiryPreview.cls}`}>{expiryPreview.label}</span>}
           </div>
         </div>
 
         <div>
-          <label className="block text-sm font-medium mb-1">所在柜子</label>
-          <select
-            value={cabinetId}
-            onChange={(e) => setCabinetId(e.target.value)}
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 bg-white"
-          >
-            <option value="">—— 请选择 ——</option>
-            {cabinets.map((c) => {
-              const r = rooms.find((x) => x.id === c.roomId);
-              const roomLabel = r ? r.name : '全屋';
-              return (
-                <option key={c.id} value={c.id}>
-                  {roomLabel} · {c.name}
-                </option>
-              );
-            })}
-          </select>
+          <label className="block text-sm font-medium mb-1">所在位置</label>
+          <div className="grid grid-cols-2 gap-2">
+            <select
+              value={roomId}
+              onChange={(e) => {
+                const next = e.target.value;
+                setRoomId(next);
+                setCabinetId(next === GLOBAL_ROOM_ID ? '__global_loose__' : '__room_loose__');
+              }}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 bg-white"
+            >
+              {rooms.map((room) => (
+                <option key={room.id} value={room.id}>{room.name}</option>
+              ))}
+              <option value={GLOBAL_ROOM_ID}>全屋自由区</option>
+            </select>
+            <select value={cabinetId} onChange={(e) => setCabinetId(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2 bg-white">
+              {roomId === GLOBAL_ROOM_ID ? (
+                <option value="__global_loose__">全屋自由区</option>
+              ) : (
+                <>
+                  {roomCabinets.map((cabinet) => (
+                    <option key={cabinet.id} value={cabinet.id}>{cabinet.name}</option>
+                  ))}
+                  <option value="__room_loose__">此房间自由区</option>
+                </>
+              )}
+            </select>
+          </div>
         </div>
 
         <div>
           <label className="block text-sm font-medium mb-1">备注</label>
-          <textarea
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            rows={2}
-            className="w-full border border-slate-200 rounded-lg px-3 py-2"
-            placeholder="选填"
-          />
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className="w-full border border-slate-200 rounded-lg px-3 py-2" placeholder="选填" />
         </div>
 
         <div>
-          <label className="block text-sm font-medium mb-1">🏷️ 标签</label>
+          <label className="text-sm font-medium mb-1 inline-flex items-center gap-2"><PinIcon name="tag" size={26} tile={false} />标签</label>
           <div className="flex flex-wrap gap-1.5 mb-2">
-            {PRESET_TAGS.map((t) => (
-              <button
-                key={t.name}
-                onClick={() => toggleTag(t.name)}
-                className={`chip text-xs ${
-                  tags.includes(t.name)
-                    ? '!bg-brand-500 !text-white'
-                    : '!bg-slate-100 !text-ink-700'
-                }`}
-              >
-                {t.emoji} {t.name}
+            {PRESET_TAGS.map((tag) => (
+              <button key={tag.name} onClick={() => toggleTag(tag.name)} className={`chip text-xs ${tags.includes(tag.name) ? '!bg-brand-500 !text-white' : '!bg-slate-100 !text-ink-700'}`}>
+                {tag.name}
               </button>
             ))}
           </div>
-          {tags.filter((t) => !PRESET_TAGS.find((p) => p.name === t)).length > 0 && (
+          {tags.filter((tag) => !PRESET_TAGS.find((preset) => preset.name === tag)).length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {tags
-                .filter((t) => !PRESET_TAGS.find((p) => p.name === t))
-                .map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => toggleTag(t)}
-                    className="chip !bg-brand-500 !text-white"
-                  >
-                    {t} ×
-                  </button>
+                .filter((tag) => !PRESET_TAGS.find((preset) => preset.name === tag))
+                .map((tag) => (
+                  <button key={tag} onClick={() => toggleTag(tag)} className="chip !bg-brand-500 !text-white">{tag} ×</button>
                 ))}
             </div>
           )}
@@ -238,42 +228,47 @@ export default function ItemDialog({
             <input
               value={customTag}
               onChange={(e) => setCustomTag(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && addCustomTag()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ',' || e.key === '，') {
+                  e.preventDefault();
+                  addCustomTag();
+                }
+              }}
               placeholder="自定义标签"
               className="flex-1 border border-slate-200 rounded-lg px-2 py-1 text-sm"
             />
-            <button
-              onClick={addCustomTag}
-              className="px-3 py-1 bg-slate-100 rounded-lg text-sm"
-            >
-              ＋
-            </button>
+            <button onClick={addCustomTag} className="px-3 py-1 bg-slate-100 rounded-lg text-sm"><PinIcon name="add" size={22} tile={false} /></button>
           </div>
         </div>
 
         <div>
           <label className="block text-sm font-medium mb-1">图片</label>
           <div className="flex items-center gap-3">
-            {blob && (
-              <BlobImage
-                blob={blob}
-                className="w-16 h-16 object-cover rounded-lg border border-slate-200"
-              />
-            )}
+            {blob && <BlobImage blob={blob} className="w-16 h-16 object-cover rounded-lg border border-slate-200" />}
             <label className="cursor-pointer px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm">
               选择图片
               <input type="file" accept="image/*" hidden onChange={pickPhoto} />
             </label>
-            {blob && (
-              <button
-                onClick={() => setBlob(null)}
-                className="text-sm text-red-500 hover:underline"
-              >
-                移除
-              </button>
-            )}
+            <label className="cursor-pointer px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm">
+              拍照
+              <input type="file" accept="image/*" capture="environment" hidden onChange={pickPhoto} />
+            </label>
+            {blob && <button onClick={() => setBlob(null)} className="text-sm text-red-500 hover:underline">移除</button>}
           </div>
         </div>
+
+        {sourcePhoto && item?.aiRect && (
+          <details className="rounded-xl bg-slate-50 p-3">
+            <summary className="cursor-pointer text-sm text-brand-600">来源照片与 AI 框选</summary>
+            <div className="relative mt-3 bg-black rounded-xl overflow-hidden">
+              <BlobImage blob={sourcePhoto.blob} className="w-full max-h-64 object-contain" />
+              <div
+                className="absolute border-2 border-rose-400 bg-rose-400/20 rounded"
+                style={{ left: `${item.aiRect.x * 100}%`, top: `${item.aiRect.y * 100}%`, width: `${item.aiRect.w * 100}%`, height: `${item.aiRect.h * 100}%` }}
+              />
+            </div>
+          </details>
+        )}
 
         <details open={showMore}>
           <summary
@@ -283,70 +278,34 @@ export default function ItemDialog({
               setShowMore(!showMore);
             }}
           >
-            ⚡ 更多属性（开封期 / 保修 / 库存 / 季节）
+            更多属性（开封期 / 保修 / 库存 / 季节）
           </summary>
           {showMore && (
             <div className="grid grid-cols-2 gap-3 mt-3 p-3 bg-slate-50 rounded-lg">
               <div>
                 <label className="block text-xs text-ink-500 mb-1">开封日期</label>
-                <input
-                  type="date"
-                  value={openedAt}
-                  onChange={(e) => setOpenedAt(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
-                />
+                <input type="date" value={openedAt} onChange={(e) => setOpenedAt(e.target.value)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
               </div>
               <div>
                 <label className="block text-xs text-ink-500 mb-1">开封后可用天数</label>
-                <input
-                  type="number"
-                  value={openedShelfDays}
-                  onChange={(e) => setOpenedShelfDays(e.target.value)}
-                  placeholder="如 90"
-                  className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
-                />
+                <input type="number" value={openedShelfDays} onChange={(e) => setOpenedShelfDays(e.target.value)} placeholder="如 90" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
               </div>
               <div>
                 <label className="block text-xs text-ink-500 mb-1">购买日期</label>
-                <input
-                  type="date"
-                  value={purchasedAt}
-                  onChange={(e) => setPurchasedAt(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
-                />
+                <input type="date" value={purchasedAt} onChange={(e) => setPurchasedAt(e.target.value)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
               </div>
               <div>
                 <label className="block text-xs text-ink-500 mb-1">保修月数</label>
-                <input
-                  type="number"
-                  value={warrantyMonths}
-                  onChange={(e) => setWarrantyMonths(e.target.value)}
-                  placeholder="如 12"
-                  className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
-                />
+                <input type="number" value={warrantyMonths} onChange={(e) => setWarrantyMonths(e.target.value)} placeholder="如 12" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
               </div>
               <div>
                 <label className="block text-xs text-ink-500 mb-1">库存下限</label>
-                <input
-                  type="number"
-                  value={minStock}
-                  onChange={(e) => setMinStock(e.target.value)}
-                  placeholder="低于则提醒"
-                  className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
-                />
+                <input type="number" value={minStock} onChange={(e) => setMinStock(e.target.value)} placeholder="低于则提醒" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
               </div>
               <div>
                 <label className="block text-xs text-ink-500 mb-1">所属季节</label>
-                <select
-                  value={season}
-                  onChange={(e) => setSeason(e.target.value as Season)}
-                  className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm bg-white"
-                >
-                  {SEASONS.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.label}
-                    </option>
-                  ))}
+                <select value={season} onChange={(e) => setSeason(e.target.value as Season)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+                  {SEASONS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
               </div>
             </div>
@@ -355,17 +314,10 @@ export default function ItemDialog({
       </div>
 
       <div className="flex gap-2 mt-5">
-        <button
-          onClick={onClose}
-          className="flex-1 py-2.5 rounded-lg border border-slate-200 text-ink-700"
-        >
-          取消
-        </button>
-        <button
-          onClick={save}
-          className="flex-1 py-2.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-medium"
-        >
-          保存
+        {item && <button onClick={remove} className="px-4 py-2.5 rounded-lg border border-red-200 text-red-600">删除</button>}
+        <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-slate-200 text-ink-700">取消</button>
+        <button onClick={save} className="flex-1 py-2.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-medium">
+          {item?.status === 'pending' ? '保存并归位' : '保存'}
         </button>
       </div>
     </div>

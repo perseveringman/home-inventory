@@ -50,7 +50,9 @@ export function ModalHost() {
             }}
           >
             <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-              {isValidElement(node) ? cloneElement(node) : node}
+              <div className="modal-content">
+                {isValidElement(node) ? cloneElement(node) : node}
+              </div>
             </div>
           </div>
         );

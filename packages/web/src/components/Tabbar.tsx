@@ -1,23 +1,26 @@
 import { useLocation, useNavigate } from 'react-router-dom';
+import { PinIcon } from './PinIcon';
 
 interface Tab {
   path: string;
   label: string;
+  icon: Parameters<typeof PinIcon>[0]['name'];
   match?: (p: string) => boolean;
 }
 
 const TABS: Tab[] = [
   {
     path: '/rooms',
-    label: '🏠 房间',
+    label: '房间',
+    icon: 'room',
     match: (p) =>
       p === '/' ||
       p.startsWith('/rooms') ||
       p.startsWith('/room/') ||
       p.startsWith('/photo/'),
   },
-  { path: '/items', label: '📦 物品' },
-  { path: '/search', label: '🔍 搜索' },
+  { path: '/items', label: '物品', icon: 'items' },
+  { path: '/search', label: '搜索', icon: 'search' },
 ];
 
 export function Tabbar() {
@@ -38,7 +41,8 @@ export function Tabbar() {
                 active ? 'text-brand-600 md:bg-brand-50' : 'text-ink-500'
               }`}
             >
-              {t.label}
+              <PinIcon name={t.icon} size={30} className="tab-icon" />
+              <span>{t.label}</span>
             </button>
           );
         })}

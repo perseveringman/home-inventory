@@ -3,6 +3,7 @@ import { Scenebar } from './components/Scenebar';
 import { Tabbar } from './components/Tabbar';
 import { ToastHost } from './components/Toast';
 import { ModalHost } from './components/Modal';
+import { FabDock } from './components/FabDock';
 
 import RoomsPage from './pages/storage/RoomsPage';
 import RoomDetailPage from './pages/storage/RoomDetailPage';
@@ -28,7 +29,7 @@ export default function App() {
   return (
     <>
       <Scenebar />
-      <div className="max-w-5xl mx-auto pb-24 md:pb-28">
+      <div className="app-shell max-w-5xl mx-auto pb-24 md:pb-28">
         <Routes>
           <Route path="/" element={<Navigate to="/rooms" replace />} />
           <Route path="/rooms" element={<RoomsPage />} />
@@ -43,6 +44,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/rooms" replace />} />
         </Routes>
       </div>
+      {inStorageScene && <FabDock />}
       {inStorageScene && <Tabbar />}
       <ToastHost />
       <ModalHost />

@@ -2,21 +2,25 @@ import { useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   compressImage,
+  cropItemFromPhoto,
   detectCabinetsAndItems,
   ensureLooseCabinet,
-  cropItemFromPhoto,
   generateItemThumb,
-  uid,
   getConfig,
-  type Photo,
+  uid,
   type Cabinet,
   type Item,
+  type Photo,
 } from '@home-inventory/core';
-import { useStore, getStorage } from '../../stores/useStore';
-import { Header } from '../../components/Header';
-import { EmptyState } from '../../components/EmptyState';
 import { BlobImage } from '../../components/BlobImage';
+import { EmptyState } from '../../components/EmptyState';
+import { Header } from '../../components/Header';
+import { openModal } from '../../components/Modal';
 import { toast } from '../../components/Toast';
+import { getStorage, useStore } from '../../stores/useStore';
+import LooseListDialog from '../modals/LooseListDialog';
+import RoomDialog from '../modals/RoomDialog';
+import { PinIcon } from '../../components/PinIcon';
 
 export default function RoomDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -27,7 +31,8 @@ export default function RoomDetailPage() {
   const items = useStore((s) => s.items);
   const put = useStore((s) => s.put);
   const del = useStore((s) => s.del);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const pickerRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
 
   const room = rooms.find((r) => r.id === id);
@@ -35,96 +40,73 @@ export default function RoomDetailPage() {
     () => photos.filter((p) => p.roomId === id).sort((a, b) => b.createdAt - a.createdAt),
     [photos, id]
   );
+  const looseCabinet = cabinets.find((c) => c.roomId === id && c.type === 'loose');
+  const looseItems = items
+    .filter((item) => item.cabinetId === looseCabinet?.id || (item.roomId === id && item.status === 'pending'))
+    .filter((item, index, list) => list.findIndex((x) => x.id === item.id) === index);
 
-  if (!room) {
+  if (!room || !id) {
     return (
       <div className="p-6">
-        <EmptyState icon="🏠" title="房间不存在" />
+        <EmptyState icon="room" title="房间不存在" />
       </div>
     );
   }
 
-  const pickPhoto = () => fileRef.current?.click();
-
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
+    const file = e.target.files?.[0];
     e.target.value = '';
-    if (!f) return;
+    if (!file) return;
     setBusy(true);
     try {
-      const { blob, width, height } = await compressImage(f);
-      const photo: Photo = {
-        id: uid(),
-        roomId: id!,
-        blob,
-        width,
-        height,
-        createdAt: Date.now(),
-      };
+      const { blob, width, height } = await compressImage(file);
+      const photo: Photo = { id: uid(), roomId: id, blob, width, height, createdAt: Date.now() };
       await put('photos', photo);
-
-      // AI 识别
       const storage = getStorage();
       const cfg = {
         openrouterKey: await getConfig<string>(storage, 'openrouterKey', ''),
-        openrouterModel: await getConfig<string>(
-          storage,
-          'openrouterModel',
-          'google/gemini-2.5-flash'
-        ),
+        openrouterModel: await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
         claudeKey: await getConfig<string>(storage, 'claudeKey', ''),
       };
       toast('已上传，AI 识别中…', 2500);
       const result = await detectCabinetsAndItems(blob, { width, height }, cfg);
-
-      // 创建柜子
-      const cabinetIdMap = new Map<string, string>();
-      for (const c of result.cabinets) {
-        const cab: Cabinet = {
+      for (const box of result.cabinets) {
+        const cabinet: Cabinet = {
           id: uid(),
           photoId: photo.id,
-          roomId: id!,
-          name: c.name,
-          rect: c.rect,
+          roomId: id,
+          name: box.name,
+          rect: box.rect,
           type: 'normal',
           createdAt: Date.now(),
         };
-        cabinetIdMap.set(c.name, cab.id);
-        await put('cabinets', cab);
+        await put('cabinets', cabinet);
       }
-
-      // 创建待处理物品（映射到自由区）
       if (result.items.length > 0) {
-        const loose = await ensureLooseCabinet(storage, id!);
-        // store 需要刷新 cabinets
-        await put('cabinets', loose); // idempotent put
-        for (const it of result.items) {
-          const crop = await cropItemFromPhoto(blob, it.rect);
-          const img = crop || (await generateItemThumb(it.name, it.emoji || '📦'));
-          const itemObj: Item = {
+        const loose = await ensureLooseCabinet(storage, id);
+        await put('cabinets', loose);
+        for (const box of result.items) {
+          const crop = await cropItemFromPhoto(blob, box.rect);
+          const item: Item = {
             id: uid(),
             cabinetId: loose.id,
-            roomId: id!,
-            name: it.name,
+            roomId: id,
+            name: box.name,
             qty: 1,
             note: '',
             tags: [],
-            image: img,
+            image: crop || (await generateItemThumb(box.name, box.emoji || 'box')),
             status: 'pending',
             source: 'ai',
             sourcePhotoId: photo.id,
-            aiEmoji: it.emoji,
-            aiRect: it.rect,
+            aiEmoji: box.emoji,
+            aiRect: box.rect,
             createdAt: Date.now(),
           };
-          await put('items', itemObj);
+          await put('items', item);
         }
       }
-
-      toast(
-        `识别完成：${result.cabinets.length} 个柜子 · ${result.items.length} 件待归位`,
-        3000
-      );
+      toast(`识别完成：${result.cabinets.length} 个柜子 · ${result.items.length} 件待归位`, 3000);
     } catch (err: any) {
       console.error(err);
       toast('上传失败：' + (err?.message || 'unknown'), 3000);
@@ -133,95 +115,102 @@ export default function RoomDetailPage() {
     }
   };
 
-  const removePhoto = async (p: Photo) => {
+  const removePhoto = async (photo: Photo) => {
     if (!confirm('删除这张照片及其柜子、物品？')) return;
-    const cabs = cabinets.filter((c) => c.photoId === p.id);
-    const its = items.filter((i) => i.sourcePhotoId === p.id);
-    for (const c of cabs) await del('cabinets', c.id);
-    for (const i of its) await del('items', i.id);
-    await del('photos', p.id);
+    const photoCabinets = cabinets.filter((cabinet) => cabinet.photoId === photo.id);
+    const relatedItems = items.filter((item) => item.sourcePhotoId === photo.id || photoCabinets.some((cabinet) => cabinet.id === item.cabinetId));
+    for (const item of relatedItems) await del('items', item.id);
+    for (const cabinet of photoCabinets) await del('cabinets', cabinet.id);
+    await del('photos', photo.id);
     toast('已删除');
   };
 
   return (
     <div>
       <Header
-        title={`${room.icon} ${room.name}`}
+        title={room.name}
         subtitle={`${myPhotos.length} 张照片`}
         back
         actions={
-          <button
-            onClick={pickPhoto}
-            disabled={busy}
-            className="px-4 py-2 bg-brand-500 hover:bg-brand-600 disabled:bg-ink-300 text-white rounded-lg text-sm font-medium"
-          >
-            {busy ? '处理中…' : '📸 拍照'}
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => openModal((close) => <RoomDialog room={room} onDone={() => {}} onClose={close} />)} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm">
+              编辑
+            </button>
+            <button onClick={() => cameraRef.current?.click()} disabled={busy} className="px-3 py-2 bg-brand-500 hover:bg-brand-600 disabled:bg-ink-300 text-white rounded-lg text-sm font-medium">
+              {busy ? '处理中…' : <><PinIcon name="camera" size={22} tile={false} /> 拍照</>}
+            </button>
+          </div>
         }
       />
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        hidden
-        onChange={onFile}
-      />
+      <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={onFile} />
+      <input ref={pickerRef} type="file" accept="image/*" hidden onChange={onFile} />
 
       <div className="px-4 md:px-6 py-4">
+        <div className="mb-4 rounded-2xl bg-brand-50 border border-brand-100 p-4 text-sm text-brand-700">
+          拍几张平面照，AI 会识别柜子和可见物品；照片详情页可重新识别、手动框选和编辑边框。
+        </div>
+
         {myPhotos.length === 0 ? (
           <EmptyState
-            icon="📸"
+            icon="photo"
             title="还没有照片"
             description="拍一张照片，AI 会自动识别柜子和物品"
             action={
-              <button
-                onClick={pickPhoto}
-                className="px-6 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg"
-              >
-                拍第一张
-              </button>
+              <div className="flex justify-center gap-2">
+                <button onClick={() => cameraRef.current?.click()} className="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg"><PinIcon name="camera" size={22} tile={false} /> 拍照</button>
+                <button onClick={() => pickerRef.current?.click()} className="px-5 py-2.5 bg-white border border-slate-200 rounded-lg"><PinIcon name="gallery" size={22} tile={false} /> 选图</button>
+              </div>
             }
           />
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {myPhotos.map((p) => {
-              const cabCnt = cabinets.filter((c) => c.photoId === p.id).length;
-              const itemCnt = items.filter((i) => i.sourcePhotoId === p.id).length;
-              return (
-                <div
-                  key={p.id}
-                  className="relative bg-white rounded-2xl shadow-soft overflow-hidden group cursor-pointer"
-                  onClick={() => navigate(`/photo/${p.id}`)}
-                >
-                  <BlobImage
-                    blob={p.blob}
-                    className="w-full aspect-[4/3] object-cover"
-                  />
-                  <div className="p-3 flex items-center justify-between">
-                    <div>
-                      <div className="text-sm text-ink-700">
-                        📦 {cabCnt} 柜 · {itemCnt} 物
+          <>
+            <div className="mb-4 rounded-2xl border-2 border-dashed border-slate-200 bg-white p-4 flex items-center justify-center gap-3">
+              <button onClick={() => cameraRef.current?.click()} disabled={busy} className="px-4 py-2 rounded-lg bg-brand-500 text-white disabled:bg-ink-300"><PinIcon name="camera" size={22} tile={false} /> 加照片</button>
+              <button onClick={() => pickerRef.current?.click()} disabled={busy} className="px-4 py-2 rounded-lg bg-slate-100 disabled:bg-ink-100"><PinIcon name="gallery" size={22} tile={false} /> 从相册选</button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {myPhotos.map((photo) => {
+                const cabinetCount = cabinets.filter((cabinet) => cabinet.photoId === photo.id).length;
+                const itemCount = items.filter((item) => item.sourcePhotoId === photo.id).length;
+                return (
+                  <div key={photo.id} className="relative bg-white rounded-2xl shadow-soft overflow-hidden group cursor-pointer" onClick={() => navigate(`/photo/${photo.id}`)}>
+                    <BlobImage blob={photo.blob} className="w-full aspect-[4/3] object-cover" />
+                    <span className="absolute top-2 right-2 px-2 py-1 rounded-full bg-black/55 text-white text-xs inline-flex items-center gap-1"><PinIcon name="cabinet" size={18} tile={false} />{cabinetCount}</span>
+                    <div className="p-3 flex items-center justify-between">
+                      <div>
+                        <div className="enamel-meta text-sm text-ink-700"><span><PinIcon name="cabinet" size={18} tile={false} />{cabinetCount} 柜</span><span><PinIcon name="box" size={18} tile={false} />{itemCount} 物</span></div>
+                        <div className="text-xs text-ink-500 mt-0.5">{new Date(photo.createdAt).toLocaleDateString()}</div>
                       </div>
-                      <div className="text-xs text-ink-500 mt-0.5">
-                        {new Date(p.createdAt).toLocaleDateString()}
-                      </div>
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          removePhoto(photo);
+                        }}
+                        className="text-ink-400 hover:text-red-500 px-2 py-1"
+                      >
+                        <PinIcon name="trash" size={22} tile={false} />
+                      </button>
                     </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removePhoto(p);
-                      }}
-                      className="text-ink-400 hover:text-red-500 px-2 py-1"
-                    >
-                      🗑️
-                    </button>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          </>
         )}
+
+        <button
+          onClick={() => openModal((close) => <LooseListDialog room={room} cabinet={looseCabinet} items={looseItems} onClose={close} />)}
+          className="mt-5 w-full bg-white rounded-2xl shadow-soft p-4 text-left hover:shadow-md"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <PinIcon name="inbox" size={58} />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold">自由物品收纳处</div>
+              <div className="text-xs text-ink-500 mt-0.5">{looseItems.length} 件自由物品，集中处理待归位</div>
+            </div>
+            <span className="text-ink-400">›</span>
+          </div>
+        </button>
       </div>
     </div>
   );

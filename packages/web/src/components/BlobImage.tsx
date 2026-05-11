@@ -1,14 +1,15 @@
 import { useEffect, useState, ImgHTMLAttributes } from 'react';
+import { PinIcon } from './PinIcon';
 
 const PLACEHOLDER =
   'data:image/svg+xml,' +
   encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120"><rect fill="#e2e8f0" width="120" height="120" rx="16"/><text x="60" y="65" text-anchor="middle" font-size="36">📦</text></svg>'
+    '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120"><rect x="10" y="10" width="100" height="100" rx="32" fill="#eef1f5"/><path d="M36 48 60 34l24 14-24 14-24-14Z" fill="#ffb14a" stroke="#171717" stroke-width="7" stroke-linejoin="round"/><path d="M36 48v28l24 14 24-14V48" fill="#d88738" stroke="#171717" stroke-width="7" stroke-linejoin="round"/><path d="M60 62v28" stroke="#171717" stroke-width="7" stroke-linecap="round"/><path d="M44 51v14l12 6" stroke="#fff" stroke-width="6" stroke-linecap="round"/></svg>'
   );
 
 interface Props extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
   blob?: Blob | null;
-  /** fallback emoji 显示（blob 为空或失败时） */
+  /** fallback marker used when blob is empty or fails to load */
   emoji?: string;
 }
 
@@ -29,11 +30,11 @@ export function BlobImage({ blob, emoji, className, alt = '', ...rest }: Props) 
     if (emoji) {
       return (
         <div
-          className={`flex items-center justify-center bg-slate-100 text-3xl ${
+          className={`sticker-image flex items-center justify-center bg-slate-100 ${
             className ?? ''
           }`}
         >
-          {emoji}
+          <PinIcon name="box" size={54} />
         </div>
       );
     }

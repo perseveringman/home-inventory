@@ -7,6 +7,7 @@ import {
 } from '@home-inventory/core';
 import { useStore } from '../../stores/useStore';
 import { toast } from '../../components/Toast';
+import { PinIcon } from '../../components/PinIcon';
 
 interface Props {
   room?: Room;
@@ -17,7 +18,7 @@ interface Props {
 export default function RoomDialog({ room, onDone, onClose }: Props) {
   const put = useStore((s) => s.put);
   const [name, setName] = useState(room?.name || '');
-  const [icon, setIcon] = useState(room?.icon || '🏠');
+  const [icon, setIcon] = useState(room?.icon || ROOM_ICONS[0]);
 
   const pickPreset = (p: { name: string; icon: string }) => {
     setName(p.name);
@@ -58,7 +59,7 @@ export default function RoomDialog({ room, onDone, onClose }: Props) {
                 onClick={() => pickPreset(p)}
                 className="py-3 rounded-xl border border-slate-200 hover:border-brand-500 hover:bg-brand-50 flex flex-col items-center gap-1"
               >
-                <span className="text-2xl">{p.icon}</span>
+                <PinIcon name="room" size={38} />
                 <span className="text-xs text-ink-700">{p.name}</span>
               </button>
             ))}
@@ -80,13 +81,13 @@ export default function RoomDialog({ room, onDone, onClose }: Props) {
           <button
             key={i}
             onClick={() => setIcon(i)}
-            className={`text-2xl py-2 rounded-lg border ${
+            className={`py-2 rounded-lg border flex justify-center ${
               icon === i
                 ? 'border-brand-500 bg-brand-50'
                 : 'border-slate-200 hover:bg-slate-50'
             }`}
           >
-            {i}
+            <PinIcon name="room" size={34} />
           </button>
         ))}
       </div>

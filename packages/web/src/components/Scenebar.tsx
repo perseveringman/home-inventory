@@ -2,20 +2,21 @@ import { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useStore } from '../stores/useStore';
 import { computeItemEvents, computeSubscriptionEvents } from '@home-inventory/core';
+import { PinIcon } from './PinIcon';
 
 interface Scene {
   id: string;
   path: string;
-  icon: string;
+  icon: Parameters<typeof PinIcon>[0]['name'];
   label: string;
 }
 
 const SCENES: Scene[] = [
-  { id: 'storage', path: '/rooms', icon: '📦', label: '收纳' },
-  { id: 'inbox', path: '/inbox', icon: '📥', label: '待处理' },
-  { id: 'overview', path: '/overview', icon: '📊', label: '总览' },
-  { id: 'subscribe', path: '/subscribe', icon: '🔔', label: '订阅' },
-  { id: 'settings', path: '/settings', icon: '⚙️', label: '设置' },
+  { id: 'storage', path: '/rooms', icon: 'storage', label: '收纳' },
+  { id: 'inbox', path: '/inbox', icon: 'inbox', label: '待处理' },
+  { id: 'overview', path: '/overview', icon: 'overview', label: '总览' },
+  { id: 'subscribe', path: '/subscribe', icon: 'subscribe', label: '订阅' },
+  { id: 'settings', path: '/settings', icon: 'settings', label: '设置' },
 ];
 
 export function Scenebar() {
@@ -59,7 +60,7 @@ export function Scenebar() {
             className={`scene-btn ${isActive(scene) ? 'active' : ''}`}
             onClick={() => navigate(scene.path)}
           >
-            <span className="icon">{scene.icon}</span>
+            <PinIcon name={scene.icon} size={42} className="icon" />
             <span>{scene.label}</span>
             {scene.id === 'inbox' && badge > 0 && (
               <span className="badge">{badge > 99 ? '99+' : badge}</span>

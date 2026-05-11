@@ -13,6 +13,7 @@ import {
   type Subscription,
   type StoreName,
   type StoreSchema,
+  scheduleAutoSync,
 } from '@home-inventory/core';
 
 const storage: Storage = new IndexedDBStorage();
@@ -41,12 +42,14 @@ export const useStore = create<StoreState>((set, get) => ({
 
   put: async (storeName, obj) => {
     await storage.put(storeName as any, obj as any);
+    if (storeName !== 'config') scheduleAutoSync(storage);
     // 重载对应集合（简单策略）
     await refreshCollection(storeName, set);
   },
 
   del: async (storeName, id) => {
     await storage.del(storeName, id);
+    if (storeName !== 'config') scheduleAutoSync(storage);
     await refreshCollection(storeName, set);
   },
 

@@ -2,3 +2,8 @@ export * from './reminder';
 export * from './subscription';
 export * from './ai';
 export * from './cabinet';
+export * from './quickAdd';
+export * from './demo';
+export * from './archive';
+export * from './chat';
+export * from './sync';

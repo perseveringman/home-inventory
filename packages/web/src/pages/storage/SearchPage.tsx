@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useStore } from '../../stores/useStore';
 import { Header } from '../../components/Header';
 import { BlobImage } from '../../components/BlobImage';
@@ -6,6 +7,7 @@ import { openModal } from '../../components/Modal';
 import ItemDialog from '../modals/ItemDialog';
 
 export default function SearchPage() {
+  const navigate = useNavigate();
   const items = useStore((s) => s.items);
   const cabinets = useStore((s) => s.cabinets);
   const rooms = useStore((s) => s.rooms);
@@ -13,7 +15,7 @@ export default function SearchPage() {
 
   const results = useMemo(() => {
     const key = q.trim().toLowerCase();
-    if (!key) return items.slice(0, 30);
+    if (!key) return [];
     return items
       .filter(
         (i) =>
@@ -33,7 +35,7 @@ export default function SearchPage() {
 
   return (
     <div>
-      <Header title="🔍 搜索" subtitle="按名称、备注、标签" />
+      <Header title="搜索" subtitle="按名称、备注、标签" />
       <div className="px-4 md:px-6 py-3">
         <input
           value={q}
@@ -43,19 +45,24 @@ export default function SearchPage() {
         />
       </div>
       <div className="px-4 md:px-6 py-2">
-        {results.length === 0 ? (
+        {!q.trim() ? (
+          <div className="text-center py-16 text-ink-500 text-sm">输入关键词开始搜索</div>
+        ) : results.length === 0 ? (
           <div className="text-center py-16 text-ink-500 text-sm">没有找到</div>
         ) : (
           <ul className="bg-white rounded-2xl shadow-soft divide-y divide-slate-100 overflow-hidden">
             {results.map((it) => (
               <li
                 key={it.id}
-                onClick={() => openModal((close) => <ItemDialog item={it} onClose={close} />)}
+                onClick={() => {
+                  if (it.sourcePhotoId) navigate(`/photo/${it.sourcePhotoId}`);
+                  else openModal((close) => <ItemDialog item={it} onClose={close} />);
+                }}
                 className="flex items-center gap-3 p-3 hover:bg-slate-50 cursor-pointer"
               >
                 <BlobImage
                   blob={it.image || null}
-                  emoji={it.aiEmoji || '📦'}
+                  emoji={it.aiEmoji || 'box'}
                   className="w-12 h-12 rounded-lg object-cover"
                 />
                 <div className="flex-1 min-w-0">
