@@ -11,7 +11,7 @@ import { toast } from './Toast';
 import { getStorage, useStore } from '../stores/useStore';
 import QuickAddDialog from '../pages/modals/QuickAddDialog';
 import { ChatDrawer } from './ChatDrawer';
-import { PinIcon } from './PinIcon';
+import { Glyph } from './Glyph';
 
 export function FabDock() {
   const location = useLocation();
@@ -66,11 +66,15 @@ export function FabDock() {
 
   return (
     <>
+      {/*
+        Visual order is column-reverse: declare secondaries first (top of stack),
+        primary last so it sits at the bottom and gets the highlighted treatment.
+      */}
       <div className="fab-dock">
-        <button onClick={() => setChatOpen(true)} className="fab-btn" title="AI 对话助手"><PinIcon name="chat" size={42} tile={false} /></button>
-        <button onClick={quickAdd} className="fab-btn" title="快速文字录入"><PinIcon name="edit" size={42} tile={false} /></button>
-        <button onClick={() => pickRef.current?.click()} disabled={busy} className="fab-btn" title="选图即时识别">{busy ? '…' : <PinIcon name="gallery" size={42} tile={false} />}</button>
-        <button onClick={() => camRef.current?.click()} disabled={busy} className="fab-btn" title="拍照即时识别">{busy ? '…' : <PinIcon name="camera" size={42} tile={false} />}</button>
+        <button onClick={() => setChatOpen(true)} className="fab-btn" title="AI 对话助手" aria-label="AI 对话助手"><Glyph name="sparkle" size={17} /></button>
+        <button onClick={quickAdd} className="fab-btn" title="快速文字录入" aria-label="快速文字录入"><Glyph name="pencil" size={17} /></button>
+        <button onClick={() => pickRef.current?.click()} disabled={busy} className="fab-btn" title="选图即时识别" aria-label="选图即时识别">{busy ? <span className="fab-dot" /> : <Glyph name="image" size={17} />}</button>
+        <button onClick={() => camRef.current?.click()} disabled={busy} className="fab-btn fab-primary" title="拍照即时识别" aria-label="拍照即时识别">{busy ? <span className="fab-dot fab-dot-light" /> : <Glyph name="camera" size={22} strokeWidth={1.7} />}</button>
       </div>
       <input ref={pickRef} type="file" accept="image/*" hidden onChange={onFile} />
       <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={onFile} />

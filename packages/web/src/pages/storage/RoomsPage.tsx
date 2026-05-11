@@ -10,6 +10,7 @@ import { BlobImage } from '../../components/BlobImage';
 import { RoomMenu } from '../../components/RoomMenu';
 import LooseListDialog from '../modals/LooseListDialog';
 import { PinIcon, roomIconName } from '../../components/PinIcon';
+import { Glyph } from '../../components/Glyph';
 
 export default function RoomsPage() {
   const navigate = useNavigate();
@@ -57,25 +58,30 @@ export default function RoomsPage() {
         actions={
           <button
             onClick={addRoom}
-            className="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm font-medium"
+            className="px-3.5 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"
           >
-            <span className="inline-flex items-center gap-1"><PinIcon name="add" size={24} tile={false} />新建</span>
+            <Glyph name="plus" size={15} strokeWidth={1.8} />新建
           </button>
         }
       />
 
-      <div className="px-4 md:px-6 py-4">
+      <div className="py-4 md:py-5">
         <button
           onClick={() => openModal((close) => <LooseListDialog cabinet={globalCabinet} items={globalItems} onClose={close} />)}
-          className="w-full mb-4 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-2xl shadow-soft p-4 text-left"
+          className="loose-card w-full mb-4 text-left"
         >
-          <div className="flex items-center justify-between gap-3">
-            <PinIcon name="box" size={62} />
+          <div className="flex items-center gap-3">
+            <PinIcon name="box" size={44} />
             <div className="flex-1 min-w-0">
-              <div className="text-lg font-semibold">全屋自由区</div>
-              <div className="text-xs opacity-90 mt-1">{globalItems.length} 件自由物品 · {globalPending} 件待归位</div>
+              <div className="eyebrow">无房间归属</div>
+              <div className="font-display text-[17px] md:text-xl text-ink-900 mt-0.5 leading-tight">全屋自由区</div>
+              <div className="text-[11.5px] text-ink-500 mt-1">
+                <span className="tabular-nums">{globalItems.length}</span> 件自由物品
+                <span className="mx-2 text-ink-300">·</span>
+                <span className="tabular-nums">{globalPending}</span> 件待归位
+              </div>
             </div>
-            {globalPending > 0 && <span className="px-2 py-1 rounded-full bg-white/20 text-xs">{globalPending}</span>}
+            {globalPending > 0 && <span className="loose-card-badge tabular-nums">{globalPending}</span>}
           </div>
         </button>
 
@@ -86,7 +92,7 @@ export default function RoomsPage() {
             description="点击右上角「新建」，先把房间建起来"
           />
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5 md:gap-3">
             {rooms.map((r) => {
               const s = roomStats(r);
               return (
@@ -95,29 +101,34 @@ export default function RoomsPage() {
                   className="bg-white rounded-2xl shadow-soft overflow-hidden hover:shadow-md transition cursor-pointer"
                   onClick={() => navigate(`/room/${r.id}`)}
                 >
-                  <div className="relative aspect-[4/3] bg-slate-100">
+                  <div className="relative aspect-[5/4] md:aspect-[4/3] bg-paper-200">
                     {s.cover ? (
                       <BlobImage blob={s.cover.blob} className="w-full h-full object-cover" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center"><PinIcon name={roomIconName(r.icon)} size={96} /></div>
+                      <div className="w-full h-full flex items-center justify-center"><PinIcon name={roomIconName(r.icon)} size={72} className="md:!w-24 md:!h-24" /></div>
                     )}
                     <button
-                      className="absolute top-2 right-2 w-8 h-8 rounded-full bg-white/90 text-ink-500 hover:text-ink-900 shadow"
+                      className="room-menu-btn"
                       onClick={(e) => {
                         e.stopPropagation();
                         openModal((close) => <RoomMenu room={r} onEdit={editRoom} onDelete={removeRoom} onClose={close} />);
                       }}
+                      aria-label="房间操作"
                     >
-                      ⋯
+                      <Glyph name="more" size={16} />
                     </button>
-                    {s.pendingCnt > 0 && <span className="absolute left-2 top-2 px-2 py-1 rounded-full bg-orange-500 text-white text-xs">{s.pendingCnt} 待归位</span>}
+                    {s.pendingCnt > 0 && (
+                      <span className="room-pending-pill">
+                        <span className="tabular-nums">{s.pendingCnt}</span> 待归位
+                      </span>
+                    )}
                   </div>
-                  <div className="p-4">
-                    <div className="font-semibold text-ink-900">{r.name}</div>
-                    <div className="enamel-meta text-xs text-ink-500 mt-2">
-                      <span><PinIcon name="photo" size={18} tile={false} />{s.photoCnt}</span>
-                      <span><PinIcon name="cabinet" size={18} tile={false} />{s.cabinetCnt}</span>
-                      <span><PinIcon name="box" size={18} tile={false} />{s.itemCnt}</span>
+                  <div className="px-3 py-3 md:px-4 md:py-4">
+                    <div className="font-display text-[15px] md:text-[17px] text-ink-900 leading-tight">{r.name}</div>
+                    <div className="enamel-meta mt-2">
+                      <span><PinIcon name="photo" size={16} tile={false} /><span className="tabular-nums">{s.photoCnt}</span></span>
+                      <span><PinIcon name="cabinet" size={16} tile={false} /><span className="tabular-nums">{s.cabinetCnt}</span></span>
+                      <span><PinIcon name="box" size={16} tile={false} /><span className="tabular-nums">{s.itemCnt}</span></span>
                     </div>
                   </div>
                 </div>

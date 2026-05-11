@@ -29,7 +29,7 @@ export default function App() {
   return (
     <>
       <Scenebar />
-      <div className="app-shell max-w-5xl mx-auto pb-24 md:pb-28">
+      <div className="app-shell max-w-5xl mx-auto pb-20 md:pb-24">
         <Routes>
           <Route path="/" element={<Navigate to="/rooms" replace />} />
           <Route path="/rooms" element={<RoomsPage />} />

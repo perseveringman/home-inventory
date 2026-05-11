@@ -60,7 +60,7 @@ export function Scenebar() {
             className={`scene-btn ${isActive(scene) ? 'active' : ''}`}
             onClick={() => navigate(scene.path)}
           >
-            <PinIcon name={scene.icon} size={42} className="icon" />
+            <PinIcon name={scene.icon} size={32} className="icon" />
             <span>{scene.label}</span>
             {scene.id === 'inbox' && badge > 0 && (
               <span className="badge">{badge > 99 ? '99+' : badge}</span>

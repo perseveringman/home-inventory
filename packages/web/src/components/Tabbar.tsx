@@ -41,7 +41,7 @@ export function Tabbar() {
                 active ? 'text-brand-600 md:bg-brand-50' : 'text-ink-500'
               }`}
             >
-              <PinIcon name={t.icon} size={30} className="tab-icon" />
+              <PinIcon name={t.icon} size={22} className="tab-icon" />
               <span>{t.label}</span>
             </button>
           );
