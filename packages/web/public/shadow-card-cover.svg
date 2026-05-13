@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 180" role="img" aria-label="Home Inventory cover">
+  <rect width="640" height="180" fill="#0f172a"/>
+  <path d="M0 132c82-38 146-34 216 10 73 46 158 43 252-18 66-43 124-50 172-24v80H0Z" fill="#14b8a6"/>
+  <path d="M84 58h92v86H84Z" fill="#ccfbf1"/>
+  <path d="M110 82h40M110 104h40M110 126h40" stroke="#0f766e" stroke-width="9" stroke-linecap="round"/>
+  <path d="M414 36h118v108H414Z" fill="#f8fafc"/>
+  <path d="M436 62h74M436 88h74M436 114h74" stroke="#334155" stroke-width="10" stroke-linecap="round"/>
+</svg>

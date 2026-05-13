@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "Home Inventory",
+  "description": "Room-based home inventory and storage manager.",
+  "origin": "https://home-inventory-seven-ashy.vercel.app",
+  "entry": "https://home-inventory-seven-ashy.vercel.app/rooms",
+  "avatarUrl": "https://home-inventory-seven-ashy.vercel.app/shadow-card-icon.svg",
+  "iconUrl": "https://home-inventory-seven-ashy.vercel.app/shadow-card-icon.svg",
+  "coverUrl": "https://home-inventory-seven-ashy.vercel.app/shadow-card-cover.svg",
+  "permissions": ["user:read"],
+  "fallbackUrl": "https://home-inventory-seven-ashy.vercel.app/rooms"
+}

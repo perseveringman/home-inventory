@@ -42,6 +42,43 @@ pnpm typecheck    # 全包类型检查
 >
 > `typecheck` 不受影响，两种 Node 都可用。
 
+## Shadow OAuth / Card 接入
+
+本项目已内置 Shadow 外部应用接入点：
+
+- `/.well-known/shadow-card.json`：Shadow card manifest，入口指向 `/rooms`
+- `/api/shadow/oauth/login`：从 Home Inventory 主动发起 Shadow OAuth
+- `/api/shadow/oauth/callback`：Shadow 授权完成后的回调地址
+
+Vercel 环境变量参考 `.env.example`：
+
+```bash
+SHADOW_BASE_URL=https://shadowob.com
+SHADOW_APP_BASE_URL=https://home-inventory-seven-ashy.vercel.app
+SHADOW_CLIENT_ID=shadow_xxx
+SHADOW_CLIENT_SECRET=shsec_xxx
+SHADOW_REDIRECT_URI=https://home-inventory-seven-ashy.vercel.app/api/shadow/oauth/callback
+SHADOW_OAUTH_SCOPES=user:read
+SHADOW_SESSION_SECRET=replace-with-a-long-random-string
+```
+
+在 Shadow 开发者设置里创建 OAuth App 时使用：
+
+- Homepage URL: `https://home-inventory-seven-ashy.vercel.app/rooms`
+- Redirect URI: `https://home-inventory-seven-ashy.vercel.app/api/shadow/oauth/callback`
+- Scopes: `user:read`
+
+如果要从 Shadow 首页玩法启动，`homepage-plays-v2` 的 `action` 配置为：
+
+```json
+{
+  "kind": "external_oauth_app",
+  "clientId": "shadow_xxx",
+  "redirectUri": "https://home-inventory-seven-ashy.vercel.app/api/shadow/oauth/callback",
+  "scopes": ["user:read"]
+}
+```
+
 ## 三端路线
 
 | 端     | 状态   | 说明                                                       |

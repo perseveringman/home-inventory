@@ -1,9 +1,12 @@
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Scenebar } from './components/Scenebar';
 import { Tabbar } from './components/Tabbar';
 import { ToastHost } from './components/Toast';
 import { ModalHost } from './components/Modal';
 import { FabDock } from './components/FabDock';
+import { toast } from './components/Toast';
+import { initShadowCardBridge } from './lib/shadowCard';
 
 import RoomsPage from './pages/storage/RoomsPage';
 import RoomDetailPage from './pages/storage/RoomDetailPage';
@@ -18,6 +21,7 @@ import SettingsPage from './pages/SettingsPage';
 
 export default function App() {
   const location = useLocation();
+  const navigate = useNavigate();
   const inStorageScene =
     location.pathname === '/' ||
     location.pathname.startsWith('/rooms') ||
@@ -25,6 +29,31 @@ export default function App() {
     location.pathname.startsWith('/photo/') ||
     location.pathname.startsWith('/items') ||
     location.pathname.startsWith('/search');
+
+  useEffect(() => initShadowCardBridge(), []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const shadowOAuthStatus = params.get('shadow_oauth');
+    if (!shadowOAuthStatus) return;
+
+    params.delete('shadow_oauth');
+    if (shadowOAuthStatus === 'connected') {
+      toast('Shadow 已连接');
+    } else if (shadowOAuthStatus === 'denied') {
+      toast('已取消 Shadow 授权');
+    } else {
+      toast('Shadow 授权未完成，请重试');
+    }
+
+    navigate(
+      {
+        pathname: location.pathname,
+        search: params.toString() ? `?${params.toString()}` : '',
+      },
+      { replace: true }
+    );
+  }, [location.pathname, location.search, navigate]);
 
   return (
     <>

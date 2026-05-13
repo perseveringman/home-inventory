@@ -7,7 +7,10 @@
   "cleanUrls": true,
   "trailingSlash": false,
   "rewrites": [
-    { "source": "/((?!assets/|favicon\\.ico).*)", "destination": "/index.html" }
+    {
+      "source": "/((?!api/|assets/|favicon\\.ico|\\.well-known/|shadow-card-icon\\.svg|shadow-card-cover\\.svg).*)",
+      "destination": "/index.html"
+    }
   ],
   "headers": [
     {
