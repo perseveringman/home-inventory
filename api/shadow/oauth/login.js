@@ -62,5 +62,5 @@ module.exports = async function handler(req, res) {
     scope: scopes,
     state,
   });
-  res.redirect(302, `${shadowBaseUrl}/oauth/authorize?${params.toString()}`);
+  res.redirect(302, `${shadowBaseUrl}/app/oauth/authorize?${params.toString()}`);
 };

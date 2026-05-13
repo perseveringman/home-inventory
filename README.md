@@ -62,6 +62,8 @@ SHADOW_OAUTH_SCOPES=user:read
 SHADOW_SESSION_SECRET=replace-with-a-long-random-string
 ```
 
+`SHADOW_BASE_URL` 填 Shadow 站点根域名即可，不要带 `/app`；授权页会自动跳到 `/app/oauth/authorize`，token/userinfo 仍走 `/api/oauth/*`。
+
 在 Shadow 开发者设置里创建 OAuth App 时使用：
 
 - Homepage URL: `https://home-inventory-seven-ashy.vercel.app`
