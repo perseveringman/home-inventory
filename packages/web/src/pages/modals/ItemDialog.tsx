@@ -7,6 +7,7 @@ import {
   ensureLooseCabinet,
   expiryInfo,
   generateItemThumb,
+  suggestItemDraft,
   uid,
   type Item,
   type Season,
@@ -37,8 +38,15 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
   const cabinets = useStore((s) => s.cabinets);
   const rooms = useStore((s) => s.rooms);
   const photos = useStore((s) => s.photos);
+  const items = useStore((s) => s.items);
   const initialCabinet = cabinets.find((c) => c.id === (item?.cabinetId || defaultCabinetId));
   const initialRoomId = item?.roomId || defaultRoomId || initialCabinet?.roomId || GLOBAL_ROOM_ID;
+  const initialCabinetChoice =
+    initialCabinet?.type === 'loose-global'
+      ? '__global_loose__'
+      : initialCabinet?.type === 'loose'
+      ? '__room_loose__'
+      : item?.cabinetId || defaultCabinetId || (initialRoomId === GLOBAL_ROOM_ID ? '__global_loose__' : '__room_loose__');
 
   const [name, setName] = useState(item?.name || '');
   const [qty, setQty] = useState(item?.qty ?? 1);
@@ -47,9 +55,7 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
   const [tags, setTags] = useState<string[]>(item?.tags || []);
   const [customTag, setCustomTag] = useState('');
   const [roomId, setRoomId] = useState(initialRoomId);
-  const [cabinetId, setCabinetId] = useState(
-    item?.cabinetId || defaultCabinetId || (initialRoomId === GLOBAL_ROOM_ID ? '__global_loose__' : '__room_loose__')
-  );
+  const [cabinetId, setCabinetId] = useState(initialCabinetChoice);
   const [blob, setBlob] = useState<Blob | null>(item?.image || null);
   const [showMore, setShowMore] = useState(false);
   const [openedAt, setOpenedAt] = useState(item?.openedAt || '');
@@ -58,6 +64,7 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
   const [warrantyMonths, setWarrantyMonths] = useState(item?.warrantyMonths ? String(item.warrantyMonths) : '');
   const [minStock, setMinStock] = useState(item?.minStock != null ? String(item.minStock) : '');
   const [season, setSeason] = useState<Season>(item?.season || '');
+  const [suggesting, setSuggesting] = useState(false);
 
   const roomCabinets = cabinets
     .filter((c) => c.roomId === roomId && (!c.type || c.type === 'normal'))
@@ -82,6 +89,119 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
     if (!file) return;
     const { blob: compressed } = await compressImage(file, 800, 0.78);
     setBlob(compressed);
+  };
+
+  const fillAISuggestion = async () => {
+    if (suggesting) return;
+    setSuggesting(true);
+    toast('AI 正在思考…', 1800);
+    try {
+      const draftItem: Item = {
+        id: item?.id || '__draft_item__',
+        cabinetId,
+        roomId,
+        name: name.trim() || item?.name || '',
+        qty: +qty || 1,
+        note: note.trim(),
+        tags,
+        image: blob || item?.image,
+        expiry: expiry || undefined,
+        status: item?.status || 'pending',
+        source: item?.source || 'manual',
+        sourcePhotoId: item?.sourcePhotoId,
+        aiEmoji: item?.aiEmoji,
+        aiRect: item?.aiRect,
+        openedAt: openedAt || undefined,
+        openedShelfDays: openedShelfDays ? +openedShelfDays : null,
+        purchasedAt: purchasedAt || undefined,
+        warrantyMonths: warrantyMonths ? +warrantyMonths : null,
+        minStock: minStock ? +minStock : null,
+        season,
+        createdAt: item?.createdAt || Date.now(),
+        lastTouchedAt: item?.lastTouchedAt,
+      };
+      const suggestion = await suggestItemDraft(getStorage(), {
+        item: draftItem,
+        rooms,
+        cabinets,
+        items,
+        today: new Date().toISOString().slice(0, 10),
+      });
+
+      let applied = 0;
+      if (suggestion.name) {
+        setName(suggestion.name);
+        applied += 1;
+      }
+      if (suggestion.qty) {
+        setQty(suggestion.qty);
+        applied += 1;
+      }
+      if (suggestion.note) {
+        setNote(suggestion.note);
+        applied += 1;
+      }
+      if (suggestion.tags?.length) {
+        setTags(suggestion.tags);
+        applied += 1;
+      }
+      if (suggestion.expiry) {
+        setExpiry(suggestion.expiry);
+        applied += 1;
+      }
+
+      const suggestedCabinet = suggestion.cabinetId
+        ? cabinets.find((cabinet) => cabinet.id === suggestion.cabinetId)
+        : null;
+      const nextRoomId = suggestedCabinet?.roomId || suggestion.roomId;
+      if (nextRoomId) {
+        setRoomId(nextRoomId);
+        if (!suggestion.cabinetId) setCabinetId(nextRoomId === GLOBAL_ROOM_ID ? '__global_loose__' : '__room_loose__');
+        applied += 1;
+      }
+      if (suggestion.cabinetId) {
+        if (suggestedCabinet?.type === 'loose-global') setCabinetId('__global_loose__');
+        else if (suggestedCabinet?.type === 'loose') setCabinetId('__room_loose__');
+        else setCabinetId(suggestion.cabinetId);
+        applied += 1;
+      }
+
+      let touchedMore = false;
+      if (suggestion.openedShelfDays !== undefined) {
+        setOpenedShelfDays(suggestion.openedShelfDays == null ? '' : String(suggestion.openedShelfDays));
+        touchedMore = true;
+        applied += 1;
+      }
+      if (suggestion.warrantyMonths !== undefined) {
+        setWarrantyMonths(suggestion.warrantyMonths == null ? '' : String(suggestion.warrantyMonths));
+        touchedMore = true;
+        applied += 1;
+      }
+      if (suggestion.minStock !== undefined) {
+        setMinStock(suggestion.minStock == null ? '' : String(suggestion.minStock));
+        touchedMore = true;
+        applied += 1;
+      }
+      if (suggestion.season) {
+        setSeason(suggestion.season);
+        touchedMore = true;
+        applied += 1;
+      }
+      if (touchedMore) setShowMore(true);
+
+      toast(
+        applied
+          ? suggestion.mode === 'local'
+            ? '已用本地规则预填建议'
+            : 'AI 建议已填入'
+          : '暂时没有可采纳的建议',
+        2400
+      );
+    } catch (err: any) {
+      toast('AI 建议失败：' + (err?.message || 'unknown'), 3200);
+    } finally {
+      setSuggesting(false);
+    }
   };
 
   const resolveCabinet = async () => {
@@ -143,8 +263,21 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
 
   return (
     <div className="p-5">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">{item ? '编辑物品' : '新增物品'}</h3>
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="flex items-center gap-2 min-w-0">
+          <h3 className="text-lg font-semibold shrink-0">{item ? '编辑物品' : '新增物品'}</h3>
+          {item?.status === 'pending' && (
+            <button
+              onClick={fillAISuggestion}
+              disabled={suggesting}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-brand-50 text-brand-700 text-xs font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+              aria-label="AI 建议"
+            >
+              <PinIcon name="spark" size={18} tile={false} />
+              <span className="whitespace-nowrap">{suggesting ? '思考中…' : 'AI 建议'}</span>
+            </button>
+          )}
+        </div>
         <button onClick={onClose} className="text-ink-500 hover:text-ink-900 text-xl">×</button>
       </div>
 

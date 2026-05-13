@@ -3,6 +3,10 @@ const crypto = require('node:crypto');
 const DEFAULT_SHADOW_BASE_URL = 'https://shadowob.com';
 const DEFAULT_SCOPES = 'user:read';
 
+function env(name) {
+  return process.env[name]?.trim();
+}
+
 function baseUrlFromRequest(req) {
   const proto = req.headers['x-forwarded-proto'] || 'https';
   const host = req.headers['x-forwarded-host'] || req.headers.host;
@@ -26,17 +30,17 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const clientId = process.env.SHADOW_CLIENT_ID;
+  const clientId = env('SHADOW_CLIENT_ID');
   if (!clientId) {
     res.status(500).send('Missing SHADOW_CLIENT_ID');
     return;
   }
 
-  const appBaseUrl = (process.env.SHADOW_APP_BASE_URL || baseUrlFromRequest(req)).replace(/\/$/, '');
-  const shadowBaseUrl = (process.env.SHADOW_BASE_URL || DEFAULT_SHADOW_BASE_URL).replace(/\/$/, '');
+  const appBaseUrl = (env('SHADOW_APP_BASE_URL') || baseUrlFromRequest(req)).replace(/\/$/, '');
+  const shadowBaseUrl = (env('SHADOW_BASE_URL') || DEFAULT_SHADOW_BASE_URL).replace(/\/$/, '');
   const redirectUri =
-    process.env.SHADOW_REDIRECT_URI || `${appBaseUrl}/api/shadow/oauth/callback`;
-  const scopes = process.env.SHADOW_OAUTH_SCOPES || DEFAULT_SCOPES;
+    env('SHADOW_REDIRECT_URI') || `${appBaseUrl}/api/shadow/oauth/callback`;
+  const scopes = env('SHADOW_OAUTH_SCOPES') || DEFAULT_SCOPES;
   const state = crypto.randomBytes(16).toString('hex');
 
   const proto = req.headers['x-forwarded-proto'] || 'https';

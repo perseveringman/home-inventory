@@ -6,4 +6,5 @@ export * from './quickAdd';
 export * from './demo';
 export * from './archive';
 export * from './chat';
+export * from './itemSuggestion';
 export * from './sync';
