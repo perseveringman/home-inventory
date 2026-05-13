@@ -46,7 +46,7 @@ pnpm typecheck    # 全包类型检查
 
 本项目已内置 Shadow 外部应用接入点：
 
-- `/.well-known/shadow-card.json`：Shadow card manifest，入口指向 `/rooms`
+- `/.well-known/shadow-card.json`：Shadow card manifest，入口指向根路径 `/`
 - `/api/shadow/oauth/login`：从 Home Inventory 主动发起 Shadow OAuth
 - `/api/shadow/oauth/callback`：Shadow 授权完成后的回调地址
 
@@ -64,7 +64,7 @@ SHADOW_SESSION_SECRET=replace-with-a-long-random-string
 
 在 Shadow 开发者设置里创建 OAuth App 时使用：
 
-- Homepage URL: `https://home-inventory-seven-ashy.vercel.app/rooms`
+- Homepage URL: `https://home-inventory-seven-ashy.vercel.app`
 - Redirect URI: `https://home-inventory-seven-ashy.vercel.app/api/shadow/oauth/callback`
 - Scopes: `user:read`
 

@@ -60,7 +60,7 @@ export default function App() {
       <Scenebar />
       <div className="app-shell max-w-5xl mx-auto pb-20 md:pb-24">
         <Routes>
-          <Route path="/" element={<Navigate to="/rooms" replace />} />
+          <Route path="/" element={<RoomsPage />} />
           <Route path="/rooms" element={<RoomsPage />} />
           <Route path="/room/:id" element={<RoomDetailPage />} />
           <Route path="/photo/:id" element={<PhotoDetailPage />} />
@@ -70,7 +70,7 @@ export default function App() {
           <Route path="/overview" element={<OverviewPage />} />
           <Route path="/subscribe" element={<SubscribePage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/rooms" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
       {inStorageScene && <FabDock />}

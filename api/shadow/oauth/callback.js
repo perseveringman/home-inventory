@@ -43,8 +43,8 @@ function signSession(session, secret) {
   return `${payload}.${signature}`;
 }
 
-function redirectToRooms(res, status) {
-  res.redirect(302, `/rooms?shadow_oauth=${encodeURIComponent(status)}`);
+function redirectToHome(res, status) {
+  res.redirect(302, `/?shadow_oauth=${encodeURIComponent(status)}`);
 }
 
 module.exports = async function handler(req, res) {
@@ -67,25 +67,25 @@ module.exports = async function handler(req, res) {
   const url = new URL(req.url, appBaseUrl);
   const error = url.searchParams.get('error');
   if (error) {
-    redirectToRooms(res, error === 'access_denied' ? 'denied' : 'error');
+    redirectToHome(res, error === 'access_denied' ? 'denied' : 'error');
     return;
   }
 
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state') || '';
   if (!code) {
-    redirectToRooms(res, 'missing_code');
+    redirectToHome(res, 'missing_code');
     return;
   }
 
   const stateCookie = parseCookies(req).shadow_oauth_state;
   const launchedFromShadow = state.startsWith('play:');
   if (stateCookie && state !== stateCookie) {
-    redirectToRooms(res, 'invalid_state');
+    redirectToHome(res, 'invalid_state');
     return;
   }
   if (!stateCookie && state && !launchedFromShadow) {
-    redirectToRooms(res, 'invalid_state');
+    redirectToHome(res, 'invalid_state');
     return;
   }
 
@@ -109,7 +109,7 @@ module.exports = async function handler(req, res) {
     const token = await tokenResponse.json().catch(() => ({}));
     if (!tokenResponse.ok) {
       console.error('Shadow token exchange failed', tokenResponse.status, token);
-      redirectToRooms(res, 'token_error');
+      redirectToHome(res, 'token_error');
       return;
     }
 
@@ -152,9 +152,9 @@ module.exports = async function handler(req, res) {
         secure,
       }),
     ]);
-    redirectToRooms(res, 'connected');
+    redirectToHome(res, 'connected');
   } catch (error) {
     console.error('Shadow OAuth callback failed', error);
-    redirectToRooms(res, 'error');
+    redirectToHome(res, 'error');
   }
 };

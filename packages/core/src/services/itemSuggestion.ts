@@ -385,34 +385,46 @@ export async function suggestItemDraft(
   const openrouterKey = await getConfig<string>(storage, 'openrouterKey', '');
 
   if (openrouterKey && input.item.image) {
-    const text = await callOpenAiCompat(
-      OPENROUTER_API,
-      openrouterKey,
-      await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
-      await buildOpenRouterMessages(prompt, input.item)
-    );
-    return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+    try {
+      const text = await callOpenAiCompat(
+        OPENROUTER_API,
+        openrouterKey,
+        await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
+        await buildOpenRouterMessages(prompt, input.item)
+      );
+      return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+    } catch (err) {
+      console.warn('OpenRouter item suggestion failed, fallback:', err);
+    }
   }
 
   const deepseekKey = await getConfig<string>(storage, 'deepseekKey', '');
   if (deepseekKey) {
-    const text = await callOpenAiCompat(
-      DEEPSEEK_API,
-      deepseekKey,
-      await getConfig<string>(storage, 'deepseekModel', 'deepseek-v4-flash'),
-      [{ role: 'user', content: prompt }]
-    );
-    return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+    try {
+      const text = await callOpenAiCompat(
+        DEEPSEEK_API,
+        deepseekKey,
+        await getConfig<string>(storage, 'deepseekModel', 'deepseek-v4-flash'),
+        [{ role: 'user', content: prompt }]
+      );
+      return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+    } catch (err) {
+      console.warn('DeepSeek item suggestion failed, fallback:', err);
+    }
   }
 
   if (openrouterKey) {
-    const text = await callOpenAiCompat(
-      OPENROUTER_API,
-      openrouterKey,
-      await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
-      [{ role: 'user', content: prompt }]
-    );
-    return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+    try {
+      const text = await callOpenAiCompat(
+        OPENROUTER_API,
+        openrouterKey,
+        await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
+        [{ role: 'user', content: prompt }]
+      );
+      return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+    } catch (err) {
+      console.warn('OpenRouter text item suggestion failed, fallback:', err);
+    }
   }
 
   await new Promise((resolve) => setTimeout(resolve, 450));
