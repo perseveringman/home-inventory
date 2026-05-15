@@ -12,6 +12,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { Header } from '../../components/Header';
 import { PinIcon } from '../../components/PinIcon';
 import { toast } from '../../components/Toast';
+import { photoStageStyle } from '../../lib/photoStage';
 import { getStorage, useStore } from '../../stores/useStore';
 
 function confidenceLabel(value?: number) {
@@ -250,8 +251,11 @@ export default function ScanReviewPage() {
 
       <div className="px-4 md:px-6 py-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
         <section>
-          <div className="photo-stage relative bg-black rounded-2xl overflow-hidden mx-auto">
-            <BlobImage blob={photo.blob} className="w-full max-h-[68vh] object-contain" />
+          <div
+            className="photo-stage relative bg-black rounded-2xl overflow-hidden mx-auto"
+            style={photoStageStyle(photo.width, photo.height)}
+          >
+            <BlobImage blob={photo.blob} className="w-full h-full object-contain" />
             {filteredCandidates.map((candidate) => {
               const hidden = candidate.reviewStatus === 'rejected';
               const rect = candidate.rect;

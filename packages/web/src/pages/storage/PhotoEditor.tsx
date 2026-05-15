@@ -12,6 +12,7 @@ import { BlobImage } from '../../components/BlobImage';
 import { openModal } from '../../components/Modal';
 import { PinIcon } from '../../components/PinIcon';
 import { toast } from '../../components/Toast';
+import { photoStageStyle } from '../../lib/photoStage';
 import { getStorage, useStore } from '../../stores/useStore';
 import CabinetDialog from '../modals/CabinetDialog';
 
@@ -186,12 +187,13 @@ export default function PhotoEditor({ photo, cabinets }: Props) {
       <div
         ref={stageRef}
         className={`photo-stage relative bg-black rounded-2xl overflow-hidden mx-auto ${mode !== 'view' ? 'touch-none' : ''}`}
+        style={photoStageStyle(photo.width, photo.height, 62)}
         onPointerDown={startDraw}
         onPointerMove={movePointer}
         onPointerUp={endPointer}
         onPointerCancel={endPointer}
       >
-        <BlobImage blob={photo.blob} className="w-full max-h-[62vh] object-contain" />
+        <BlobImage blob={photo.blob} className="w-full h-full object-contain" />
         {cabinets.map((cabinet) => {
           const rect = localRects[cabinet.id] || cabinet.rect;
           const active = selectedId === cabinet.id;
