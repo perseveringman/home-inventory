@@ -62,6 +62,30 @@ SHADOW_OAUTH_SCOPES=user:read
 SHADOW_SESSION_SECRET=replace-with-a-long-random-string
 ```
 
+## AI 后端代理
+
+AI 请求统一走同源 Vercel Functions，浏览器不再保存或携带供应商 API Key：
+
+- `/api/ai/openrouter`：OpenRouter / Gemini Vision，用于图片识别、图片物品建议和文本备选
+- `/api/ai/deepseek`：DeepSeek 文本对话和文本物品建议
+- `/api/ai/claude`：Claude Vision 备选
+- `/api/ai/status`：只返回哪些后端密钥已配置，不返回密钥本身
+
+在 Vercel Project Settings → Environment Variables 配置：
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-xxx
+OPENROUTER_MODEL=google/gemini-2.5-flash
+DEEPSEEK_API_KEY=sk-xxx
+DEEPSEEK_MODEL=deepseek-v4-flash
+ANTHROPIC_API_KEY=sk-ant-xxx
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
+AI_HTTP_REFERER=https://your-app.vercel.app
+AI_APP_TITLE=Home Inventory
+```
+
+本地如果要验证后端函数，请使用 Vercel CLI 的 `vercel dev`，单独运行 `pnpm dev` 只会启动 Vite 前端。
+
 `SHADOW_BASE_URL` 填 Shadow 站点根域名即可，不要带 `/app`；授权页会自动跳到 `/app/oauth/authorize`，token/userinfo 仍走 `/api/oauth/*`。
 
 在 Shadow 开发者设置里创建 OAuth App 时使用：

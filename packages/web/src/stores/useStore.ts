@@ -7,8 +7,11 @@ import {
   IndexedDBStorage,
   type Cabinet,
   type Item,
+  type ActionLog,
+  type Label,
   type Photo,
   type Room,
+  type ScanSession,
   type Storage,
   type Subscription,
   type StoreName,
@@ -24,6 +27,9 @@ interface StoreState {
   cabinets: Cabinet[];
   items: Item[];
   subscriptions: Subscription[];
+  scanSessions: ScanSession[];
+  labels: Label[];
+  actionLogs: ActionLog[];
   ready: boolean;
 
   // 数据读写 —— 以 store 名称为维度
@@ -38,6 +44,9 @@ export const useStore = create<StoreState>((set, get) => ({
   cabinets: [],
   items: [],
   subscriptions: [],
+  scanSessions: [],
+  labels: [],
+  actionLogs: [],
   ready: false,
 
   put: async (storeName, obj) => {
@@ -54,14 +63,36 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   reloadAll: async () => {
-    const [rooms, photos, cabinets, items, subscriptions] = await Promise.all([
+    const [
+      rooms,
+      photos,
+      cabinets,
+      items,
+      subscriptions,
+      scanSessions,
+      labels,
+      actionLogs,
+    ] = await Promise.all([
       storage.all('rooms'),
       storage.all('photos'),
       storage.all('cabinets'),
       storage.all('items'),
       storage.all('subscriptions'),
+      storage.all('scanSessions'),
+      storage.all('labels'),
+      storage.all('actionLogs'),
     ]);
-    set({ rooms, photos, cabinets, items, subscriptions, ready: true });
+    set({
+      rooms,
+      photos,
+      cabinets,
+      items,
+      subscriptions,
+      scanSessions,
+      labels,
+      actionLogs,
+      ready: true,
+    });
   },
 }));
 
@@ -84,6 +115,15 @@ async function refreshCollection(
       break;
     case 'subscriptions':
       set({ subscriptions: await storage.all('subscriptions') });
+      break;
+    case 'scanSessions':
+      set({ scanSessions: await storage.all('scanSessions') });
+      break;
+    case 'labels':
+      set({ labels: await storage.all('labels') });
+      break;
+    case 'actionLogs':
+      set({ actionLogs: await storage.all('actionLogs') });
       break;
     case 'config':
       break;

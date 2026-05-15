@@ -1,9 +1,11 @@
 import { useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   compressImage,
-  getConfig,
-  scanLooseItemsFromPhoto,
+  createScanSessionFromDetection,
+  detectCabinetsAndItems,
+  GLOBAL_ROOM_ID,
+  uid,
   type Photo,
 } from '@home-inventory/core';
 import { openModal } from './Modal';
@@ -15,8 +17,10 @@ import { PinIcon } from './PinIcon';
 
 export function FabDock() {
   const location = useLocation();
+  const navigate = useNavigate();
   const photos = useStore((s) => s.photos);
   const reloadAll = useStore((s) => s.reloadAll);
+  const put = useStore((s) => s.put);
   const camRef = useRef<HTMLInputElement>(null);
   const pickRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -38,18 +42,27 @@ export function FabDock() {
     try {
       const compressed = await compressImage(file);
       const storage = getStorage();
-      const cfg = {
-        openrouterKey: await getConfig<string>(storage, 'openrouterKey', ''),
-        openrouterModel: await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
-        claudeKey: await getConfig<string>(storage, 'claudeKey', ''),
-      };
-      let sourcePhoto: Photo | null = null;
-      const photoId = location.pathname.match(/^\/photo\/([^/]+)/)?.[1];
-      if (photoId) sourcePhoto = photos.find((photo) => photo.id === photoId) || null;
       toast('AI 正在识别物品…', 2500);
-      const added = await scanLooseItemsFromPhoto(storage, compressed.blob, compressed, cfg, targetRoomId(), sourcePhoto);
+      const existingPhotoId = location.pathname.match(/^\/photo\/([^/]+)/)?.[1];
+      const existingPhoto = existingPhotoId
+        ? photos.find((photo) => photo.id === existingPhotoId) || null
+        : null;
+      const photo: Photo =
+        existingPhoto ||
+        {
+          id: uid(),
+          roomId: targetRoomId() || GLOBAL_ROOM_ID,
+          blob: compressed.blob,
+          width: compressed.width,
+          height: compressed.height,
+          createdAt: Date.now(),
+        };
+      if (!existingPhoto) await put('photos', photo);
+      const result = await detectCabinetsAndItems(compressed.blob, compressed, {});
+      const session = await createScanSessionFromDetection(storage, photo, result);
       await reloadAll();
-      toast(added.length ? `识别了 ${added.length} 件物品，已放入待处理` : '没识别到可记录的物品', 3000);
+      toast(`识别了 ${result.cabinets.length + result.items.length} 个候选，进入审核台`, 3000);
+      navigate(`/scan/${session.id}`);
     } catch (err: any) {
       console.error(err);
       toast('识别失败：' + (err?.message || 'unknown'), 3000);

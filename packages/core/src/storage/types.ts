@@ -3,6 +3,7 @@
  * web 用 IndexedDB，Expo 用 SQLite/AsyncStorage，Electron 用文件系统等。
  */
 import type { Cabinet, Item, Photo, Room, Subscription } from '../models';
+import type { ActionLog, Label, ScanSession } from '../models';
 
 export type StoreName =
   | 'rooms'
@@ -10,6 +11,9 @@ export type StoreName =
   | 'cabinets'
   | 'items'
   | 'subscriptions'
+  | 'scanSessions'
+  | 'labels'
+  | 'actionLogs'
   | 'config';
 
 /** 各 store 的 record 类型映射 */
@@ -19,6 +23,9 @@ export interface StoreSchema {
   cabinets: Cabinet;
   items: Item;
   subscriptions: Subscription;
+  scanSessions: ScanSession;
+  labels: Label;
+  actionLogs: ActionLog;
   config: { id: string; value: unknown };
 }
 

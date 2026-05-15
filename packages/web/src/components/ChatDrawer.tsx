@@ -2,10 +2,15 @@ import { useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   buildChatSystemPrompt,
+  applyInventoryActionPlan,
+  describeInventoryAction,
+  extractInventoryActionPlan,
   extractRenameSuggestions,
+  stripInventoryActionBlock,
   streamChatWithAI,
   stripRenameBlock,
   type ChatMessage,
+  type InventoryActionPlan,
   type RenameSuggestion,
 } from '@home-inventory/core';
 import { getStorage, useStore } from '../stores/useStore';
@@ -85,10 +90,12 @@ export function ChatDrawer({ open, onClose }: Props) {
   const items = useStore((s) => s.items);
   const subscriptions = useStore((s) => s.subscriptions);
   const put = useStore((s) => s.put);
+  const reloadAll = useStore((s) => s.reloadAll);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [renames, setRenames] = useState<RenameSuggestion[]>([]);
+  const [actionPlan, setActionPlan] = useState<InventoryActionPlan | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // Derive current room id from path (e.g. /room/abc, /photo/xyz handled in caller).
@@ -116,6 +123,7 @@ export function ChatDrawer({ open, onClose }: Props) {
     setMessages([...history, { role: 'assistant', content: '' }]);
     setInput('');
     setRenames([]);
+    setActionPlan(null);
     setStreaming(true);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -124,13 +132,15 @@ export function ChatDrawer({ open, onClose }: Props) {
         getStorage(),
         [{ role: 'system', content: systemPrompt }, ...history],
         (_delta, current) => {
-          setMessages([...history, { role: 'assistant', content: stripRenameBlock(current) }]);
+          setMessages([...history, { role: 'assistant', content: stripInventoryActionBlock(stripRenameBlock(current)) }]);
           setRenames(extractRenameSuggestions(current));
+          setActionPlan(extractInventoryActionPlan(current));
         },
         controller.signal
       );
-      setMessages([...history, { role: 'assistant', content: stripRenameBlock(full) }]);
+      setMessages([...history, { role: 'assistant', content: stripInventoryActionBlock(stripRenameBlock(full)) }]);
       setRenames(extractRenameSuggestions(full));
+      setActionPlan(extractInventoryActionPlan(full));
     } catch (err: any) {
       if (err?.name !== 'AbortError') toast('AI 对话失败：' + (err?.message || 'unknown'), 3000);
     } finally {
@@ -149,6 +159,18 @@ export function ChatDrawer({ open, onClose }: Props) {
     await put('cabinets', { ...cabinet, name: suggestion.newName });
     setRenames((cur) => cur.filter((item) => item.id !== suggestion.id));
     toast('已采纳重命名');
+  };
+
+  const applyPlan = async () => {
+    if (!actionPlan) return;
+    try {
+      const count = await applyInventoryActionPlan(getStorage(), actionPlan);
+      await reloadAll();
+      setActionPlan(null);
+      toast(count ? `已应用 ${count} 项变更` : '没有可应用的变更');
+    } catch (err: any) {
+      toast('应用失败：' + (err?.message || 'unknown'), 3000);
+    }
   };
 
   return (
@@ -231,6 +253,34 @@ export function ChatDrawer({ open, onClose }: Props) {
                   </button>
                 </div>
               ))}
+            </div>
+          )}
+          {actionPlan && (
+            <div className="bg-brand-50 border border-brand-100 rounded-xl p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[12.5px] font-semibold text-brand-700">
+                    可执行方案
+                  </div>
+                  <div className="text-[11.5px] text-brand-700/80 mt-0.5">
+                    {actionPlan.summary}
+                  </div>
+                </div>
+                <button
+                  onClick={applyPlan}
+                  className="px-2.5 py-1 rounded-full bg-brand-500 text-white text-[11.5px]"
+                >
+                  应用
+                </button>
+              </div>
+              <div className="space-y-1">
+                {actionPlan.actions.map((action, index) => (
+                  <div key={index} className="text-[12.5px] text-ink-700 flex gap-2">
+                    <span className="text-brand-600">{index + 1}.</span>
+                    <span>{describeInventoryAction(action)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

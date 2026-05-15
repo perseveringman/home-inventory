@@ -2,14 +2,9 @@ import { useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   compressImage,
-  cropItemFromPhoto,
+  createScanSessionFromDetection,
   detectCabinetsAndItems,
-  ensureLooseCabinet,
-  generateItemThumb,
-  getConfig,
   uid,
-  type Cabinet,
-  type Item,
   type Photo,
 } from '@home-inventory/core';
 import { BlobImage } from '../../components/BlobImage';
@@ -31,6 +26,7 @@ export default function RoomDetailPage() {
   const items = useStore((s) => s.items);
   const put = useStore((s) => s.put);
   const del = useStore((s) => s.del);
+  const reloadAll = useStore((s) => s.reloadAll);
   const cameraRef = useRef<HTMLInputElement>(null);
   const pickerRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -63,50 +59,12 @@ export default function RoomDetailPage() {
       const photo: Photo = { id: uid(), roomId: id, blob, width, height, createdAt: Date.now() };
       await put('photos', photo);
       const storage = getStorage();
-      const cfg = {
-        openrouterKey: await getConfig<string>(storage, 'openrouterKey', ''),
-        openrouterModel: await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
-        claudeKey: await getConfig<string>(storage, 'claudeKey', ''),
-      };
       toast('已上传，AI 识别中…', 2500);
-      const result = await detectCabinetsAndItems(blob, { width, height }, cfg);
-      for (const box of result.cabinets) {
-        const cabinet: Cabinet = {
-          id: uid(),
-          photoId: photo.id,
-          roomId: id,
-          name: box.name,
-          rect: box.rect,
-          type: 'normal',
-          createdAt: Date.now(),
-        };
-        await put('cabinets', cabinet);
-      }
-      if (result.items.length > 0) {
-        const loose = await ensureLooseCabinet(storage, id);
-        await put('cabinets', loose);
-        for (const box of result.items) {
-          const crop = await cropItemFromPhoto(blob, box.rect);
-          const item: Item = {
-            id: uid(),
-            cabinetId: loose.id,
-            roomId: id,
-            name: box.name,
-            qty: 1,
-            note: '',
-            tags: [],
-            image: crop || (await generateItemThumb(box.name, box.emoji || 'box')),
-            status: 'pending',
-            source: 'ai',
-            sourcePhotoId: photo.id,
-            aiEmoji: box.emoji,
-            aiRect: box.rect,
-            createdAt: Date.now(),
-          };
-          await put('items', item);
-        }
-      }
-      toast(`识别完成：${result.cabinets.length} 个柜子 · ${result.items.length} 件待归位`, 3000);
+      const result = await detectCabinetsAndItems(blob, { width, height }, {});
+      const session = await createScanSessionFromDetection(storage, photo, result);
+      await reloadAll();
+      toast(`识别完成：${result.cabinets.length} 个柜子 · ${result.items.length} 件候选`, 3000);
+      navigate(`/scan/${session.id}`);
     } catch (err: any) {
       console.error(err);
       toast('上传失败：' + (err?.message || 'unknown'), 3000);
@@ -147,7 +105,7 @@ export default function RoomDetailPage() {
 
       <div className="px-4 md:px-6 py-4">
         <div className="mb-4 rounded-2xl bg-brand-50 border border-brand-100 p-4 text-sm text-brand-700">
-          拍几张平面照，AI 会识别柜子和可见物品；照片详情页可重新识别、手动框选和编辑边框。
+          拍几张平面照，AI 会生成柜子和物品候选；进入审核台确认后再写入档案。
         </div>
 
         {myPhotos.length === 0 ? (

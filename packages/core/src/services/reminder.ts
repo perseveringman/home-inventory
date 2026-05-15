@@ -105,7 +105,7 @@ export function computeItemEvents(items: Item[]): ReminderEvent[] {
     // 4. 库存低
     if (it.minStock != null && it.minStock !== null && +it.minStock > 0) {
       const q = +it.qty || 0;
-      if (q <= +it.minStock) {
+      if (q < +it.minStock) {
         events.push({
           kind: 'lowstock',
           level: q === 0 ? 'critical' : 'warn',

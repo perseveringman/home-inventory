@@ -84,7 +84,7 @@ export default function PhotoDetailPage() {
             </div>
           </div>
         ) : (
-          <div className="mt-4 text-center text-ink-500 text-sm">这张照片还没有识别出柜子，可点「AI 识别」或手动框选。</div>
+          <div className="mt-4 text-center text-ink-500 text-sm">这张照片还没有已应用的柜子，可点「AI 识别」生成审核候选，或手动框选。</div>
         )}
       </div>
     </div>

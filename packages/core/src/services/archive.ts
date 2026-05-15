@@ -1,5 +1,14 @@
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
-import type { Cabinet, Item, Photo, Room, Subscription } from '../models';
+import type {
+  ActionLog,
+  Cabinet,
+  Item,
+  Label,
+  Photo,
+  Room,
+  ScanSession,
+  Subscription,
+} from '../models';
 import type { Storage } from '../storage/types';
 
 interface ExportPayload {
@@ -10,6 +19,9 @@ interface ExportPayload {
   cabinets: Cabinet[];
   items: Array<Omit<Item, 'image'> & { image?: string }>;
   subscriptions: Subscription[];
+  scanSessions?: ScanSession[];
+  labels?: Label[];
+  actionLogs?: ActionLog[];
 }
 
 export interface ArchiveFile {
@@ -44,12 +56,16 @@ function slug(raw: string, fallback: string) {
 }
 
 export async function buildFileTree(storage: Storage): Promise<ArchiveFile[]> {
-  const [rooms, photos, cabinets, items, subscriptions] = await Promise.all([
+  const [rooms, photos, cabinets, items, subscriptions, scanSessions, labels, actionLogs] =
+    await Promise.all([
     storage.all('rooms'),
     storage.all('photos'),
     storage.all('cabinets'),
     storage.all('items'),
     storage.all('subscriptions'),
+    storage.all('scanSessions'),
+    storage.all('labels'),
+    storage.all('actionLogs'),
   ]);
   const files: ArchiveFile[] = [
     {
@@ -64,6 +80,8 @@ export async function buildFileTree(storage: Storage): Promise<ArchiveFile[]> {
             cabinets: cabinets.length,
             items: items.length,
             subscriptions: subscriptions.length,
+            scanSessions: scanSessions.length,
+            labels: labels.length,
             total_qty: items.reduce((sum, item) => sum + (item.qty || 1), 0),
           },
         },
@@ -85,6 +103,9 @@ export async function buildFileTree(storage: Storage): Promise<ArchiveFile[]> {
     cabinets,
     items: [],
     subscriptions,
+    scanSessions,
+    labels,
+    actionLogs,
   };
   for (const photo of photos) {
     payload.photos.push({ ...photo, blob: (await blobToDataUrl(photo.blob)) || '' });
@@ -158,4 +179,7 @@ export async function importZip(storage: Storage, zipBlob: Blob, replace = true)
     });
   }
   for (const sub of payload.subscriptions) await storage.put('subscriptions', sub);
+  for (const session of payload.scanSessions || []) await storage.put('scanSessions', session);
+  for (const label of payload.labels || []) await storage.put('labels', label);
+  for (const log of payload.actionLogs || []) await storage.put('actionLogs', log);
 }

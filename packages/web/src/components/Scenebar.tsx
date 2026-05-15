@@ -16,6 +16,7 @@ const SCENES: Scene[] = [
   { id: 'inbox', path: '/inbox', icon: 'inbox', label: '待处理' },
   { id: 'overview', path: '/overview', icon: 'overview', label: '总览' },
   { id: 'subscribe', path: '/subscribe', icon: 'subscribe', label: '订阅' },
+  { id: 'labels', path: '/labels', icon: 'tag', label: '标签' },
   { id: 'settings', path: '/settings', icon: 'settings', label: '设置' },
 ];
 

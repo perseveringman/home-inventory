@@ -4,13 +4,16 @@
 import type { Storage, StoreName, StoreSchema } from './types';
 
 const DB_NAME = 'home-inventory-v2';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORES: StoreName[] = [
   'rooms',
   'photos',
   'cabinets',
   'items',
   'subscriptions',
+  'scanSessions',
+  'labels',
+  'actionLogs',
   'config',
 ];
 
@@ -30,6 +33,19 @@ function openDB(): Promise<IDBDatabase> {
           }
           if (name === 'items') {
             store.createIndex('cabinetId', 'cabinetId', { unique: false });
+          }
+          if (name === 'scanSessions') {
+            store.createIndex('roomId', 'roomId', { unique: false });
+            store.createIndex('photoId', 'photoId', { unique: false });
+            store.createIndex('status', 'status', { unique: false });
+          }
+          if (name === 'labels') {
+            store.createIndex('code', 'code', { unique: true });
+            store.createIndex('targetId', 'targetId', { unique: false });
+            store.createIndex('status', 'status', { unique: false });
+          }
+          if (name === 'actionLogs') {
+            store.createIndex('createdAt', 'createdAt', { unique: false });
           }
         }
       });
@@ -112,7 +128,7 @@ export class IndexedDBStorage implements Storage {
   }
 }
 
-/* ---------- 配置（API Key 等） ---------- */
+/* ---------- 本地配置（模型名、偏好等非敏感值） ---------- */
 export async function getConfig<T = string>(
   storage: Storage,
   key: string,

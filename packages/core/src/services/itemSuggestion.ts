@@ -21,6 +21,12 @@ export interface ItemDraftSuggestion {
   warrantyMonths?: number | null;
   minStock?: number | null;
   season?: Season;
+  brand?: string;
+  modelNumber?: string;
+  serialNumber?: string;
+  purchasePrice?: number | null;
+  manualUrl?: string;
+  receiptNote?: string;
   reason?: string;
   mode?: SuggestionMode;
 }
@@ -135,6 +141,12 @@ ${buildPlacementOptions(rooms, cabinets, items)}
   "warrantyMonths": 12,
   "minStock": 1,
   "season": "spring|summer|autumn|winter|",
+  "brand": "Apple",
+  "modelNumber": "A1234",
+  "serialNumber": "XYZ123",
+  "purchasePrice": 1999,
+  "manualUrl": "https://...",
+  "receiptNote": "小票待补拍",
   "reason": "为什么这样建议，20 字以内"
 }
 
@@ -143,21 +155,23 @@ ${buildPlacementOptions(rooms, cabinets, items)}
 2. 若当前名称像“物品1/白色瓶子/未知物品”且你能从图片或上下文判断，可以改名；否则保留原名。
 3. 标签最多 4 个，优先使用可用标签。
 4. 不要编造具体保质期、购买日期或品牌规格；没有确定来源时不要返回 expiry。
-5. note 可以提醒用户补录关键事实，例如“待确认保质期”，但不要写空泛宣传语。
-6. cabinetId 为普通柜子 id 时，roomId 必须是该柜子的 roomId；选择房间自由区时 cabinetId 用 "__room_loose__"；选择全屋自由区时 roomId 用 "${GLOBAL_ROOM_ID}" 且 cabinetId 用 "__global_loose__"。`;
+5. 品牌、型号、序列号只在图片或名称里明确可见时返回；不确定时可以用 receiptNote/note 提醒用户补拍铭牌或小票。
+6. note 可以提醒用户补录关键事实，例如“待确认保质期”，但不要写空泛宣传语。
+7. cabinetId 为普通柜子 id 时，roomId 必须是该柜子的 roomId；选择房间自由区时 cabinetId 用 "__room_loose__"；选择全屋自由区时 roomId 用 "${GLOBAL_ROOM_ID}" 且 cabinetId 用 "__global_loose__"。`;
 }
 
 async function callOpenAiCompat(
+  provider: 'deepseek' | 'openrouter',
   url: string,
-  apiKey: string,
-  model: string,
+  apiKey: string | undefined,
+  model: string | undefined,
   messages: Array<{ role: 'system' | 'user'; content: unknown }>
 ): Promise<string> {
-  const res = await fetch(url, {
+  const res = await fetch(apiKey ? url : `/api/ai/${provider}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     },
     body: JSON.stringify({
       model,
@@ -201,6 +215,13 @@ function sanitizePositiveNumber(value: unknown, max: number): number | undefined
 function sanitizeNullablePositiveNumber(value: unknown, max: number): number | null | undefined {
   if (value === null) return null;
   return sanitizePositiveNumber(value, max);
+}
+
+function sanitizeMoney(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  if (value == null || value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, 100000000) : undefined;
 }
 
 function sanitizeSeason(value: unknown): Season | undefined {
@@ -267,6 +288,12 @@ function sanitizeSuggestion(
     warrantyMonths: sanitizeNullablePositiveNumber(obj.warrantyMonths, 240),
     minStock: sanitizeNullablePositiveNumber(obj.minStock, 999),
     season: sanitizeSeason(obj.season),
+    brand: sanitizeText(obj.brand, 40),
+    modelNumber: sanitizeText(obj.modelNumber, 60),
+    serialNumber: sanitizeText(obj.serialNumber, 80),
+    purchasePrice: sanitizeMoney(obj.purchasePrice),
+    manualUrl: sanitizeText(obj.manualUrl, 200),
+    receiptNote: sanitizeText(obj.receiptNote, 120),
     reason: sanitizeText(obj.reason, 80),
     mode,
   };
@@ -382,14 +409,14 @@ export async function suggestItemDraft(
   input: SuggestItemDraftInput
 ): Promise<ItemDraftSuggestion> {
   const prompt = buildSuggestionPrompt(input);
-  const openrouterKey = await getConfig<string>(storage, 'openrouterKey', '');
 
-  if (openrouterKey && input.item.image) {
+  if (input.item.image) {
     try {
       const text = await callOpenAiCompat(
+        'openrouter',
         OPENROUTER_API,
-        openrouterKey,
-        await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
+        undefined,
+        (await getConfig<string>(storage, 'openrouterModel', '')) || undefined,
         await buildOpenRouterMessages(prompt, input.item)
       );
       return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
@@ -398,33 +425,30 @@ export async function suggestItemDraft(
     }
   }
 
-  const deepseekKey = await getConfig<string>(storage, 'deepseekKey', '');
-  if (deepseekKey) {
-    try {
-      const text = await callOpenAiCompat(
-        DEEPSEEK_API,
-        deepseekKey,
-        await getConfig<string>(storage, 'deepseekModel', 'deepseek-v4-flash'),
-        [{ role: 'user', content: prompt }]
-      );
-      return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
-    } catch (err) {
-      console.warn('DeepSeek item suggestion failed, fallback:', err);
-    }
+  try {
+    const text = await callOpenAiCompat(
+      'deepseek',
+      DEEPSEEK_API,
+      undefined,
+      (await getConfig<string>(storage, 'deepseekModel', '')) || undefined,
+      [{ role: 'user', content: prompt }]
+    );
+    return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+  } catch (err) {
+    console.warn('DeepSeek item suggestion failed, fallback:', err);
   }
 
-  if (openrouterKey) {
-    try {
-      const text = await callOpenAiCompat(
-        OPENROUTER_API,
-        openrouterKey,
-        await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
-        [{ role: 'user', content: prompt }]
-      );
-      return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
-    } catch (err) {
-      console.warn('OpenRouter text item suggestion failed, fallback:', err);
-    }
+  try {
+    const text = await callOpenAiCompat(
+      'openrouter',
+      OPENROUTER_API,
+      undefined,
+      (await getConfig<string>(storage, 'openrouterModel', '')) || undefined,
+      [{ role: 'user', content: prompt }]
+    );
+    return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+  } catch (err) {
+    console.warn('OpenRouter text item suggestion failed, fallback:', err);
   }
 
   await new Promise((resolve) => setTimeout(resolve, 450));

@@ -32,6 +32,70 @@ export interface Photo {
   createdAt: number;
 }
 
+/* ========== AI 审核 / 标签 / 操作日志 ========== */
+
+export type ReviewStatus = 'pending' | 'accepted' | 'rejected' | 'edited';
+export type ScanCandidateKind = 'cabinet' | 'item';
+export type PlacementSource = 'ai' | 'user';
+
+export interface ScanCandidate {
+  id: ID;
+  kind: ScanCandidateKind;
+  name: string;
+  rect: Rect;
+  emoji?: string;
+  confidence?: number;
+  aiReason?: string;
+  suggestedCabinetCandidateId?: ID;
+  placementConfidence?: number;
+  placementReason?: string;
+  placementSource?: PlacementSource;
+  reviewStatus: ReviewStatus;
+  userCorrection?: string;
+  createdAt: number;
+}
+
+export type ScanSessionStatus = 'reviewing' | 'applied' | 'discarded';
+
+export interface ScanSession {
+  id: ID;
+  photoId: ID;
+  roomId: ID;
+  status: ScanSessionStatus;
+  candidates: ScanCandidate[];
+  createdAt: number;
+  appliedAt?: number;
+}
+
+export type LabelTargetType = 'room' | 'cabinet' | 'item';
+export type LabelStatus = 'unclaimed' | 'linked' | 'revoked';
+
+export interface Label {
+  id: ID;
+  code: string;
+  homeId?: string;
+  labelNo?: string;
+  targetType?: LabelTargetType;
+  targetId?: ID;
+  status: LabelStatus;
+  createdAt: number;
+  updatedAt?: number;
+}
+
+export type ActionLogSource = 'user' | 'ai' | 'system';
+
+export interface ActionLog {
+  id: ID;
+  source: ActionLogSource;
+  type: string;
+  summary: string;
+  targetType?: string;
+  targetId?: ID;
+  before?: unknown;
+  after?: unknown;
+  createdAt: number;
+}
+
 export type CabinetType = 'normal' | 'loose' | 'loose-global';
 
 export interface Cabinet {
@@ -77,6 +141,20 @@ export interface Item {
   warrantyMonths?: number | null;
   minStock?: number | null;
   season?: Season;
+
+  // 家庭资产脑字段
+  brand?: string;
+  modelNumber?: string;
+  serialNumber?: string;
+  purchasePrice?: number | null;
+  manualUrl?: string;
+  receiptNote?: string;
+
+  // AI 信任与反馈
+  confidence?: number;
+  aiReason?: string;
+  reviewStatus?: ReviewStatus;
+  userCorrection?: string;
 
   createdAt: number;
   lastTouchedAt?: number;

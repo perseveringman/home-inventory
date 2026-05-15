@@ -22,6 +22,8 @@ export default function SettingsPage() {
   const cabinets = useStore((s) => s.cabinets);
   const items = useStore((s) => s.items);
   const subs = useStore((s) => s.subscriptions);
+  const labels = useStore((s) => s.labels);
+  const actionLogs = useStore((s) => s.actionLogs);
   const importRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [lastSync, setLastSync] = useState('');
@@ -120,9 +122,9 @@ export default function SettingsPage() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="font-semibold mb-1 inline-flex items-center gap-2"><PinIcon name="ai" size={30} />AI 识别与对话</h2>
-              <p className="text-xs text-ink-500">配置 OpenRouter、DeepSeek、Claude，并测试文本模型连接。</p>
+              <p className="text-xs text-ink-500">密钥从 Vercel 环境变量读取；这里仅测试后端连接与覆盖模型名。</p>
             </div>
-            <button onClick={() => openModal((close) => <ApiConfigDialog onClose={close} />)} className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm">配置 API</button>
+            <button onClick={() => openModal((close) => <ApiConfigDialog onClose={close} />)} className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm">AI 后端</button>
           </div>
         </section>
 
@@ -135,6 +137,7 @@ export default function SettingsPage() {
               ['柜子', cabinets.length],
               ['物品', items.length],
               ['订阅', subs.length],
+              ['标签', labels.length],
               ['存储 MB', storageMB],
             ].map(([label, value]) => (
               <div key={label} className="bg-slate-50 rounded-lg p-3 text-center">
@@ -169,11 +172,37 @@ export default function SettingsPage() {
           </section>
         )}
 
+        <section className="bg-white rounded-2xl shadow-soft p-5">
+          <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="spark" size={30} />AI / 操作日志</h2>
+          {actionLogs.length ? (
+            <div className="space-y-2 text-sm">
+              {actionLogs
+                .slice()
+                .sort((a, b) => b.createdAt - a.createdAt)
+                .slice(0, 8)
+                .map((log) => (
+                  <div key={log.id} className="rounded-xl bg-slate-50 p-3 flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-medium text-ink-800">{log.summary}</div>
+                      <div className="text-xs text-ink-500 mt-0.5">{log.type} · {log.source}</div>
+                    </div>
+                    <div className="text-[11px] text-ink-400 whitespace-nowrap">
+                      {new Date(log.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          ) : (
+            <div className="text-sm text-ink-500">还没有可追踪操作。AI 审核、批量归位、标签绑定会记录在这里。</div>
+          )}
+        </section>
+
         <section className="bg-white rounded-2xl shadow-soft p-5 text-sm text-ink-600 space-y-2">
           <h2 className="font-semibold text-ink-900 inline-flex items-center gap-2"><PinIcon name="book" size={30} />使用指南</h2>
-          <p>1. 在房间内上传照片，AI 会识别柜子和可见物品；物品先进入待处理，确认位置后归位。</p>
-          <p>2. 照片详情页可重新识别、手动画框、拖动手柄编辑柜子边界。</p>
-          <p>3. 右下角悬浮按钮支持 AI 对话、快速文字录入、拍照/选图即时识别。</p>
+          <p>1. 在房间内上传照片，AI 会先生成扫描审核台；确认候选后才写入柜子和待归位物品。</p>
+          <p>2. 待处理页可生成 AI 分拣方案，批量把物品归位到最合适的房间或柜子。</p>
+          <p>3. 标签页可生成、打印、扫描二维码标签；二维码只保存稳定标签码，内容从本地数据库读取。</p>
+          <p>4. 右下角悬浮按钮支持 AI 对话、快速文字录入、拍照/选图即时识别。</p>
         </section>
 
         <section className="text-center text-xs text-ink-400 py-4">

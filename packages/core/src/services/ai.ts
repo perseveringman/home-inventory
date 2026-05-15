@@ -6,6 +6,8 @@ import { fileToBase64 } from '../utils/image';
 
 const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
 const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
+const DEFAULT_DETECTION_REPAIR_ROUNDS = 2;
+const MAX_DETECTION_REPAIR_ROUNDS = 3;
 
 const CABINET_DETECT_PROMPT = `你是一个严谨的家居收纳视觉识别助手。请基于照片同时完成两类识别：储物单元 cabinets 和可见物品 items。
 
@@ -51,7 +53,8 @@ const CABINET_DETECT_PROMPT = `你是一个严谨的家居收纳视觉识别助�
 【去重与归属】
 1. cabinets 与 items 可以重叠：一个柜子内可以包含很多 items。
 2. 不要把同一个物品重复输出多次。
-3. 不需要声明物品属于哪个柜子，系统会让用户后续归位。
+3. 不需要声明物品属于哪个柜子，系统会用边界框的包含/重叠关系自动推断归属。
+4. 因为会用几何关系推断归属，cabinet 的框要覆盖它能容纳或承载的物品，不要只框一条边或一个把手。
 
 【输出格式】
 只输出一个 JSON 对象，不要 Markdown，不要解释，不要前后缀：
@@ -141,24 +144,106 @@ export function parseDetection(text: string): DetectionResult {
   return { cabinets, items };
 }
 
+function normalizeRepairRounds(value?: number): number {
+  if (value == null || !Number.isFinite(value)) return DEFAULT_DETECTION_REPAIR_ROUNDS;
+  return Math.max(0, Math.min(MAX_DETECTION_REPAIR_ROUNDS, Math.floor(value)));
+}
+
+function truncateForRepair(text: string): string {
+  const max = 12000;
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n\n[内容过长，已截断 ${text.length - max} 字符]`;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function ensureUsefulDetection(result: DetectionResult): DetectionResult {
+  if (result.cabinets.length === 0 && result.items.length === 0) {
+    throw new Error('AI 返回了空识别结果：cabinets 和 items 都为空');
+  }
+  return result;
+}
+
+function buildDetectionRepairPrompt(err: unknown, rawText: string, round: number, maxRounds: number): string {
+  return `上一次房间图片识别结果没有通过系统解析/校验。请根据原始照片、错误信息和上一次返回数据，修复为严格合法的 JSON。
+
+修复轮次：${round}/${maxRounds}
+错误信息：${errorMessage(err)}
+
+上一次返回数据：
+${truncateForRepair(rawText)}
+
+必须只输出一个 JSON 对象，不要 Markdown，不要解释，不要前后缀。schema 如下：
+{
+  "cabinets": [
+    {"name":"白色吊柜左格","rect":{"x":0.05,"y":0.10,"w":0.20,"h":0.35}}
+  ],
+  "items": [
+    {"name":"苹果键盘","emoji":"⌨️","rect":{"x":0.42,"y":0.61,"w":0.15,"h":0.05}}
+  ]
+}
+
+要求：
+1. cabinets 和 items 必须是数组，没有结果时才返回 []。
+2. rect 必须是 0~1 的归一化数字，且 x+w ≤ 1、y+h ≤ 1。
+3. 不要丢弃上一次已经可信的识别项；只修复格式、字段、越界坐标、空结果或明显错误。
+4. 如果上一次数据无法复用，请重新基于原始照片识别。`;
+}
+
+async function parseDetectionWithRepair({
+  provider,
+  initialMessages,
+  callModel,
+  maxRepairRounds,
+}: {
+  provider: string;
+  initialMessages: any[];
+  callModel: (messages: any[]) => Promise<string>;
+  maxRepairRounds: number;
+}): Promise<DetectionResult> {
+  let text = await callModel(initialMessages);
+  let lastError: unknown;
+
+  for (let round = 0; round <= maxRepairRounds; round += 1) {
+    try {
+      return ensureUsefulDetection(parseDetection(text));
+    } catch (err) {
+      lastError = err;
+      if (round >= maxRepairRounds) break;
+      console.warn(`${provider} detect output invalid, repairing ${round + 1}/${maxRepairRounds}:`, err);
+      text = await callModel([
+        ...initialMessages,
+        { role: 'assistant', content: truncateForRepair(text) },
+        { role: 'user', content: buildDetectionRepairPrompt(err, text, round + 1, maxRepairRounds) },
+      ]);
+    }
+  }
+
+  throw new Error(
+    `${provider} 识别结果修复失败（已尝试 ${maxRepairRounds} 轮）：${errorMessage(lastError)}`
+  );
+}
+
 /* ---------- OpenRouter (Gemini Vision) ---------- */
 
 async function callOpenRouter(
-  apiKey: string,
+  apiKey: string | undefined,
   model: string,
   messages: any[]
 ): Promise<string> {
-  const res = await fetch(OPENROUTER_API, {
+  const res = await fetch(apiKey ? OPENROUTER_API : '/api/ai/openrouter', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     },
     body: JSON.stringify({ model, messages, max_tokens: 4096 }),
   });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`OpenRouter API (${res.status}): ${err.slice(0, 200)}`);
+    throw new Error(`OpenRouter API (${res.status}): ${err.slice(0, 300)}`);
   }
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || 'OpenRouter 返回错误');
@@ -166,12 +251,13 @@ async function callOpenRouter(
 }
 
 async function detectWithGemini(
-  apiKey: string,
+  apiKey: string | undefined,
   model: string,
-  blob: Blob
+  blob: Blob,
+  maxRepairRounds: number
 ): Promise<DetectionResult> {
   const base64 = await fileToBase64(blob);
-  const text = await callOpenRouter(apiKey, model, [
+  const initialMessages = [
     {
       role: 'user',
       content: [
@@ -182,16 +268,22 @@ async function detectWithGemini(
         },
       ],
     },
-  ]);
-  return parseDetection(text);
+  ];
+  return parseDetectionWithRepair({
+    provider: 'Gemini',
+    initialMessages,
+    callModel: (messages) => callOpenRouter(apiKey, model, messages),
+    maxRepairRounds,
+  });
 }
 
 /* ---------- Claude Vision ---------- */
 
 async function detectWithClaude(
-  apiKey: string,
+  apiKey: string | undefined,
   blob: Blob,
-  size: { width: number; height: number }
+  size: { width: number; height: number },
+  maxRepairRounds: number
 ): Promise<DetectionResult> {
   const maxSide = 1568;
   let imgBlob = blob;
@@ -210,29 +302,43 @@ async function detectWithClaude(
     }
   }
   const base64 = await fileToBase64(imgBlob);
-  const res = await fetch(ANTHROPIC_API, {
+  const initialMessages = [
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
+        },
+        { type: 'text', text: CABINET_DETECT_PROMPT },
+      ],
+    },
+  ];
+  return parseDetectionWithRepair({
+    provider: 'Claude',
+    initialMessages,
+    callModel: (messages) => callClaude(apiKey, messages),
+    maxRepairRounds,
+  });
+}
+
+async function callClaude(apiKey: string | undefined, messages: any[]): Promise<string> {
+  const res = await fetch(apiKey ? ANTHROPIC_API : '/api/ai/claude', {
     method: 'POST',
     headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
       'Content-Type': 'application/json',
+      ...(apiKey
+        ? {
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true',
+          }
+        : {}),
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
-            },
-            { type: 'text', text: CABINET_DETECT_PROMPT },
-          ],
-        },
-      ],
+      messages,
     }),
   });
   if (!res.ok) {
@@ -241,7 +347,7 @@ async function detectWithClaude(
   }
   const data = await res.json();
   const text = data.content?.[0]?.text || '';
-  return parseDetection(text);
+  return text;
 }
 
 /* ---------- 启发式占位 ---------- */
@@ -266,6 +372,7 @@ export interface DetectConfig {
   openrouterKey?: string;
   openrouterModel?: string;
   claudeKey?: string;
+  maxRepairRounds?: number;
 }
 
 export async function detectCabinetsAndItems(
@@ -273,23 +380,22 @@ export async function detectCabinetsAndItems(
   size: { width: number; height: number },
   cfg: DetectConfig
 ): Promise<DetectionResult> {
-  if (cfg.openrouterKey) {
-    try {
-      return await detectWithGemini(
-        cfg.openrouterKey,
-        cfg.openrouterModel || 'google/gemini-2.5-flash',
-        blob
-      );
-    } catch (e) {
-      console.warn('Gemini detect failed, fallback:', e);
-    }
+  const maxRepairRounds = normalizeRepairRounds(cfg.maxRepairRounds);
+  try {
+    return await detectWithGemini(
+      cfg.openrouterKey,
+      cfg.openrouterModel || 'google/gemini-2.5-flash',
+      blob,
+      maxRepairRounds
+    );
+  } catch (e) {
+    console.warn('Gemini detect failed after repair, try next provider/fallback:', e);
   }
-  if (cfg.claudeKey) {
-    try {
-      return await detectWithClaude(cfg.claudeKey, blob, size);
-    } catch (e) {
-      console.warn('Claude detect failed, fallback:', e);
-    }
+
+  try {
+    return await detectWithClaude(cfg.claudeKey, blob, size, maxRepairRounds);
+  } catch (e) {
+    console.warn('Claude detect failed after repair, fallback:', e);
   }
   // 占位
   await new Promise((r) => setTimeout(r, 400));

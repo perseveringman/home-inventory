@@ -63,7 +63,7 @@ function formatItemList(items: Item[], limit = 14): string {
   if (!items.length) return '（暂无物品）';
   const head = items
     .slice(0, limit)
-    .map((it) => `${it.name}${formatItemMeta(it)}`)
+    .map((it) => `[itemId=${it.id}] ${it.name}${formatItemMeta(it)}`)
     .join('、');
   if (items.length <= limit) return head;
   // Tag tail summary so the AI still has a sense of the rest.
@@ -156,7 +156,7 @@ export function buildChatSystemPrompt(
       const room = rooms.find((r) => r.id === it.roomId);
       const cabinet = cabinets.find((c) => c.id === it.cabinetId);
       const where = `${room ? room.name : '未知房间'} › ${cabinet ? cabinet.name : '（无柜子）'}`;
-      return `- ${it.name}${formatItemMeta(it)} @ ${where}`;
+      return `- [itemId=${it.id}] ${it.name}${formatItemMeta(it)} @ ${where}`;
     });
     pendingBlock =
       `\n【待处理（共 ${pending.length} 件，需要归位 / 整理）】\n` +
@@ -232,6 +232,7 @@ ${pendingBlock}${subBlock}${eventsBlock}
 3. 提醒近期到期 / 逾期 / 即将扣款的事项；解释 critical 与 warn 的区别。
 4. 给储物单元起更语义化的名字（仅当用户主动要重命名时输出 \`\`\`rename\`\`\` 块）。
 5. 给出整理、分类、空间利用的简洁建议。
+6. 当用户明确要求你“执行、批量归位、打标签、移动、更新、生成二维码标签”时，先用自然语言说明方案，然后追加 \`\`\`inventory_actions\`\`\` 块，让前端展示 diff 后由用户确认执行。
 
 【重要：重命名建议的输出格式】
 仅当用户明确请求重命名/改名时，在正文之后追加：
@@ -239,6 +240,21 @@ ${pendingBlock}${subBlock}${eventsBlock}
 [{"id":"<上面清单里的id原值>","newName":"建议名"}]
 \`\`\`
 id 必须严格使用 [id=xxx] 的原值；newName 控制在 12 个字以内；一次最多 8 条。其它情况下不要输出此代码块。
+
+【重要：可执行操作的输出格式】
+仅当用户明确要求更改数据时，在正文之后追加：
+\`\`\`inventory_actions
+{
+  "summary": "一句话说明要做什么",
+  "actions": [
+    {"type":"moveItems","itemIds":["<itemId>"],"targetCabinetId":"<cabinet id 或 __room_loose__ 或 __global_loose__>","targetRoomId":"<移动到房间自由区时必填>"},
+    {"type":"tagItems","itemIds":["<itemId>"],"tags":["药品"],"mode":"append"},
+    {"type":"renameCabinet","cabinetId":"<id>","newName":"新名字"},
+    {"type":"createLabels","targetType":"cabinet","targetIds":["<cabinet id>"]}
+  ]
+}
+\`\`\`
+只使用清单中出现过的 id；没有把握时不要输出操作块，改为询问用户确认。不要直接说“已完成”，因为需要用户点击应用。
 
 回答风格：简洁、有条理、说人话。引用具体物品/订阅时贴近清单中的命名，不要捏造不存在的条目。`;
 }
@@ -263,18 +279,19 @@ export function stripRenameBlock(text: string): string {
 }
 
 async function streamOpenAiCompat(
+  provider: 'deepseek' | 'openrouter',
   url: string,
-  apiKey: string,
-  model: string,
+  apiKey: string | undefined,
+  model: string | undefined,
   messages: ChatMessage[],
   onDelta: (delta: string, full: string) => void,
   abortSignal?: AbortSignal
 ): Promise<string> {
-  const res = await fetch(url, {
+  const res = await fetch(apiKey ? url : `/api/ai/${provider}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     },
     body: JSON.stringify({ model, messages, max_tokens: 4096, temperature: 0.6, stream: true }),
     signal: abortSignal,
@@ -325,45 +342,48 @@ export async function streamChatWithAI(
   onDelta: (delta: string, full: string) => void,
   abortSignal?: AbortSignal
 ): Promise<string> {
-  const deepseekKey = await getConfig<string>(storage, 'deepseekKey', '');
-  if (deepseekKey) {
+  let lastError: unknown;
+  try {
     return streamOpenAiCompat(
+      'deepseek',
       DEEPSEEK_API,
-      deepseekKey,
-      await getConfig<string>(storage, 'deepseekModel', 'deepseek-v4-flash'),
+      undefined,
+      (await getConfig<string>(storage, 'deepseekModel', '')) || undefined,
       messages,
       onDelta,
       abortSignal
     );
+  } catch (err) {
+    if (abortSignal?.aborted) throw err;
+    lastError = err;
+    console.warn('DeepSeek chat failed, try OpenRouter:', err);
   }
-  const openrouterKey = await getConfig<string>(storage, 'openrouterKey', '');
-  if (openrouterKey) {
+
+  try {
     return streamOpenAiCompat(
+      'openrouter',
       OPENROUTER_API,
-      openrouterKey,
-      await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
+      undefined,
+      (await getConfig<string>(storage, 'openrouterModel', '')) || undefined,
       messages,
       onDelta,
       abortSignal
     );
+  } catch (err) {
+    if (abortSignal?.aborted) throw err;
+    console.warn('OpenRouter chat failed:', err);
+    throw err instanceof Error ? err : lastError instanceof Error ? lastError : new Error('AI 对话失败');
   }
-  throw new Error('请先在设置页配置 DeepSeek 或 OpenRouter API Key');
 }
 
 export async function testTextAI(storage: Storage, provider: 'deepseek' | 'openrouter'): Promise<string> {
-  const keyName = provider === 'deepseek' ? 'deepseekKey' : 'openrouterKey';
   const modelName = provider === 'deepseek' ? 'deepseekModel' : 'openrouterModel';
-  const apiKey = await getConfig<string>(storage, keyName, '');
-  if (!apiKey) throw new Error('请先填写 API Key');
-  const url = provider === 'deepseek' ? DEEPSEEK_API : OPENROUTER_API;
-  const model = await getConfig<string>(
-    storage,
-    modelName,
-    provider === 'deepseek' ? 'deepseek-v4-flash' : 'google/gemini-2.5-flash'
-  );
-  const res = await fetch(url, {
+  const model = (await getConfig<string>(storage, modelName, '')) || undefined;
+  const res = await fetch(`/api/ai/${provider}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    headers: {
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({
       model,
       messages: [{ role: 'user', content: '用一句中文回复：连接正常。' }],

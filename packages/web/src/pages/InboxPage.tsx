@@ -1,9 +1,12 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   GLOBAL_ROOM_ID,
   REMINDER_KIND_LABEL,
+  applyPlacementPlan,
   computeItemEvents,
   computeSubscriptionEvents,
+  suggestPlacementPlan,
+  type PlacementPlan,
   type ReminderEvent,
   type ReminderKind,
 } from '@home-inventory/core';
@@ -11,10 +14,11 @@ import { BlobImage } from '../components/BlobImage';
 import { EmptyState } from '../components/EmptyState';
 import { Header } from '../components/Header';
 import { openModal } from '../components/Modal';
-import { useStore } from '../stores/useStore';
+import { getStorage, useStore } from '../stores/useStore';
 import ItemDialog from './modals/ItemDialog';
 import SubscriptionDialog from './modals/SubscriptionDialog';
 import { PinIcon } from '../components/PinIcon';
+import { toast } from '../components/Toast';
 
 const LEVEL_STYLE: Record<string, string> = {
   critical: 'bg-red-50 border-red-200 text-red-700',
@@ -29,6 +33,10 @@ export default function InboxPage() {
   const rooms = useStore((s) => s.rooms);
   const cabinets = useStore((s) => s.cabinets);
   const subscriptions = useStore((s) => s.subscriptions);
+  const reloadAll = useStore((s) => s.reloadAll);
+  const [plan, setPlan] = useState<PlacementPlan | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [applying, setApplying] = useState(false);
 
   const pendingGroups = useMemo(() => {
     const map = new Map<string, typeof items>();
@@ -52,6 +60,29 @@ export default function InboxPage() {
     if (roomId === GLOBAL_ROOM_ID) return '全屋自由区';
     const room = rooms.find((r) => r.id === roomId);
     return room ? room.name : '未知房间';
+  };
+
+  const makePlan = () => {
+    const next = suggestPlacementPlan(rooms, cabinets, items);
+    setPlan(next);
+    setSelected(next.suggestions.filter((s) => s.confidence >= 0.5).map((s) => s.itemId));
+    toast(next.suggestions.length ? 'AI 分拣方案已生成' : '当前没有待归位物品');
+  };
+
+  const applyPlan = async () => {
+    if (!plan || !selected.length) return;
+    setApplying(true);
+    try {
+      const count = await applyPlacementPlan(getStorage(), plan, selected);
+      await reloadAll();
+      setPlan(null);
+      setSelected([]);
+      toast(`已归位 ${count} 件物品`);
+    } catch (err: any) {
+      toast(err?.message || '归位失败', 3000);
+    } finally {
+      setApplying(false);
+    }
   };
 
   const locate = (itemId?: string) => {
@@ -89,7 +120,80 @@ export default function InboxPage() {
 
   return (
     <div>
-      <Header title="待处理" subtitle={totalCount ? `${totalCount} 项待你关注` : '现在没有待办，辛苦了'} />
+      <Header
+        title="待处理"
+        subtitle={totalCount ? `${totalCount} 项待你关注` : '现在没有待办，辛苦了'}
+        actions={
+          <button
+            onClick={makePlan}
+            disabled={!items.some((item) => item.status === 'pending')}
+            className="px-3 py-1.5 rounded-lg bg-brand-500 text-white text-sm disabled:bg-ink-300 inline-flex items-center gap-1"
+          >
+            <PinIcon name="spark" size={22} tile={false} />AI 分拣
+          </button>
+        }
+      />
+
+      {plan && (
+        <section className="px-4 md:px-6 py-3">
+          <div className="bg-white rounded-2xl shadow-soft p-4">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <h2 className="font-semibold inline-flex items-center gap-2">
+                  <PinIcon name="spark" size={30} />AI 分拣方案
+                </h2>
+                <div className="text-xs text-ink-500 mt-0.5">{plan.summary}</div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setPlan(null)} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm">
+                  关闭
+                </button>
+                <button
+                  onClick={applyPlan}
+                  disabled={!selected.length || applying}
+                  className="px-3 py-1.5 rounded-lg bg-brand-500 text-white text-sm disabled:bg-ink-300"
+                >
+                  {applying ? '应用中…' : `应用 ${selected.length} 项`}
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {plan.suggestions.map((suggestion) => {
+                const item = items.find((x) => x.id === suggestion.itemId);
+                if (!item) return null;
+                const checked = selected.includes(suggestion.itemId);
+                return (
+                  <label
+                    key={suggestion.itemId}
+                    className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) =>
+                        setSelected((cur) =>
+                          event.target.checked
+                            ? [...cur, suggestion.itemId]
+                            : cur.filter((id) => id !== suggestion.itemId)
+                        )
+                      }
+                    />
+                    <BlobImage blob={item.image || null} emoji={item.aiEmoji || 'box'} className="w-11 h-11 rounded-lg object-cover bg-white" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{item.name}</div>
+                      <div className="text-xs text-ink-500 truncate">→ {suggestion.targetLabel}</div>
+                      <div className="text-[11px] text-brand-700 mt-0.5">{suggestion.reason}</div>
+                    </div>
+                    <span className="text-[11px] px-2 py-1 rounded-full bg-white text-ink-500">
+                      {Math.round(suggestion.confidence * 100)}%
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      )}
 
       {totalCount === 0 && (
         <div className="px-4 md:px-6 py-4">

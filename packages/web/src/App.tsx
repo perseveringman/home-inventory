@@ -13,10 +13,12 @@ import RoomDetailPage from './pages/storage/RoomDetailPage';
 import PhotoDetailPage from './pages/storage/PhotoDetailPage';
 import ItemsPage from './pages/storage/ItemsPage';
 import SearchPage from './pages/storage/SearchPage';
+import ScanReviewPage from './pages/storage/ScanReviewPage';
 
 import InboxPage from './pages/InboxPage';
 import OverviewPage from './pages/OverviewPage';
 import SubscribePage from './pages/SubscribePage';
+import LabelsPage from './pages/LabelsPage';
 import SettingsPage from './pages/SettingsPage';
 
 export default function App() {
@@ -27,6 +29,7 @@ export default function App() {
     location.pathname.startsWith('/rooms') ||
     location.pathname.startsWith('/room/') ||
     location.pathname.startsWith('/photo/') ||
+    location.pathname.startsWith('/scan/') ||
     location.pathname.startsWith('/items') ||
     location.pathname.startsWith('/search');
 
@@ -64,11 +67,13 @@ export default function App() {
           <Route path="/rooms" element={<RoomsPage />} />
           <Route path="/room/:id" element={<RoomDetailPage />} />
           <Route path="/photo/:id" element={<PhotoDetailPage />} />
+          <Route path="/scan/:id" element={<ScanReviewPage />} />
           <Route path="/items" element={<ItemsPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/inbox" element={<InboxPage />} />
           <Route path="/overview" element={<OverviewPage />} />
           <Route path="/subscribe" element={<SubscribePage />} />
+          <Route path="/labels" element={<LabelsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

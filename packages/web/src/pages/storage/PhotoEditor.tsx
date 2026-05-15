@@ -1,14 +1,10 @@
 import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  cropItemFromPhoto,
+  createScanSessionFromDetection,
   detectCabinetsAndItems,
-  ensureLooseCabinet,
-  generateItemThumb,
-  getConfig,
   uid,
   type Cabinet,
-  type Item,
   type Photo,
   type Rect,
 } from '@home-inventory/core';
@@ -73,6 +69,7 @@ export default function PhotoEditor({ photo, cabinets }: Props) {
   const put = useStore((s) => s.put);
   const del = useStore((s) => s.del);
   const items = useStore((s) => s.items);
+  const reloadAll = useStore((s) => s.reloadAll);
   const stageRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<Mode>('view');
   const [selectedId, setSelectedId] = useState(cabinets[0]?.id || '');
@@ -92,56 +89,16 @@ export default function PhotoEditor({ photo, cabinets }: Props) {
   };
 
   const runAI = async () => {
-    if (!confirm('重新 AI 识别会替换这张照片上的柜子标注和来源待归位物品，继续？')) return;
+    if (!confirm('重新 AI 识别会生成一个新的审核台，现有柜子和物品会保留，继续？')) return;
     setBusy(true);
     try {
       const storage = getStorage();
-      const cfg = {
-        openrouterKey: await getConfig<string>(storage, 'openrouterKey', ''),
-        openrouterModel: await getConfig<string>(storage, 'openrouterModel', 'google/gemini-2.5-flash'),
-        claudeKey: await getConfig<string>(storage, 'claudeKey', ''),
-      };
-      const relatedItems = items.filter((item) => item.sourcePhotoId === photo.id);
-      for (const item of relatedItems) await del('items', item.id);
-      for (const cabinet of cabinets) await del('cabinets', cabinet.id);
-      const detected = await detectCabinetsAndItems(photo.blob, { width: photo.width, height: photo.height }, cfg);
-      for (const box of detected.cabinets) {
-        await put('cabinets', {
-          id: uid(),
-          photoId: photo.id,
-          roomId: photo.roomId,
-          name: box.name,
-          rect: box.rect,
-          type: 'normal',
-          createdAt: Date.now(),
-        });
-      }
-      if (detected.items.length) {
-        const loose = await ensureLooseCabinet(storage, photo.roomId);
-        await put('cabinets', loose);
-        for (const box of detected.items) {
-          const crop = await cropItemFromPhoto(photo.blob, box.rect);
-          const item: Item = {
-            id: uid(),
-            cabinetId: loose.id,
-            roomId: photo.roomId,
-            name: box.name,
-            qty: 1,
-            note: '',
-            tags: [],
-            image: crop || (await generateItemThumb(box.name, box.emoji || 'box')),
-            status: 'pending',
-            source: 'ai',
-            sourcePhotoId: photo.id,
-            aiEmoji: box.emoji,
-            aiRect: box.rect,
-            createdAt: Date.now(),
-          };
-          await put('items', item);
-        }
-      }
+      const detected = await detectCabinetsAndItems(photo.blob, { width: photo.width, height: photo.height }, {});
+      const session = await createScanSessionFromDetection(storage, photo, detected);
       setLocalRects({});
-      toast(`识别完成：${detected.cabinets.length} 个柜子 · ${detected.items.length} 件待归位`, 3000);
+      await reloadAll();
+      toast(`识别完成：${detected.cabinets.length} 个柜子 · ${detected.items.length} 件候选`, 3000);
+      navigate(`/scan/${session.id}`);
     } catch (err: any) {
       console.error(err);
       toast('识别失败：' + (err?.message || 'unknown'), 3000);

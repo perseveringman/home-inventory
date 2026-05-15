@@ -64,6 +64,12 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
   const [warrantyMonths, setWarrantyMonths] = useState(item?.warrantyMonths ? String(item.warrantyMonths) : '');
   const [minStock, setMinStock] = useState(item?.minStock != null ? String(item.minStock) : '');
   const [season, setSeason] = useState<Season>(item?.season || '');
+  const [brand, setBrand] = useState(item?.brand || '');
+  const [modelNumber, setModelNumber] = useState(item?.modelNumber || '');
+  const [serialNumber, setSerialNumber] = useState(item?.serialNumber || '');
+  const [purchasePrice, setPurchasePrice] = useState(item?.purchasePrice != null ? String(item.purchasePrice) : '');
+  const [manualUrl, setManualUrl] = useState(item?.manualUrl || '');
+  const [receiptNote, setReceiptNote] = useState(item?.receiptNote || '');
   const [suggesting, setSuggesting] = useState(false);
 
   const roomCabinets = cabinets
@@ -117,6 +123,12 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
         warrantyMonths: warrantyMonths ? +warrantyMonths : null,
         minStock: minStock ? +minStock : null,
         season,
+        brand: brand.trim() || undefined,
+        modelNumber: modelNumber.trim() || undefined,
+        serialNumber: serialNumber.trim() || undefined,
+        purchasePrice: purchasePrice ? +purchasePrice : null,
+        manualUrl: manualUrl.trim() || undefined,
+        receiptNote: receiptNote.trim() || undefined,
         createdAt: item?.createdAt || Date.now(),
         lastTouchedAt: item?.lastTouchedAt,
       };
@@ -187,6 +199,36 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
         touchedMore = true;
         applied += 1;
       }
+      if (suggestion.brand) {
+        setBrand(suggestion.brand);
+        touchedMore = true;
+        applied += 1;
+      }
+      if (suggestion.modelNumber) {
+        setModelNumber(suggestion.modelNumber);
+        touchedMore = true;
+        applied += 1;
+      }
+      if (suggestion.serialNumber) {
+        setSerialNumber(suggestion.serialNumber);
+        touchedMore = true;
+        applied += 1;
+      }
+      if (suggestion.purchasePrice !== undefined) {
+        setPurchasePrice(suggestion.purchasePrice == null ? '' : String(suggestion.purchasePrice));
+        touchedMore = true;
+        applied += 1;
+      }
+      if (suggestion.manualUrl) {
+        setManualUrl(suggestion.manualUrl);
+        touchedMore = true;
+        applied += 1;
+      }
+      if (suggestion.receiptNote) {
+        setReceiptNote(suggestion.receiptNote);
+        touchedMore = true;
+        applied += 1;
+      }
       if (touchedMore) setShowMore(true);
 
       toast(
@@ -245,6 +287,12 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
       warrantyMonths: warrantyMonths ? +warrantyMonths : null,
       minStock: minStock ? +minStock : null,
       season,
+      brand: brand.trim() || undefined,
+      modelNumber: modelNumber.trim() || undefined,
+      serialNumber: serialNumber.trim() || undefined,
+      purchasePrice: purchasePrice ? +purchasePrice : null,
+      manualUrl: manualUrl.trim() || undefined,
+      receiptNote: receiptNote.trim() || undefined,
       createdAt: item?.createdAt || Date.now(),
       lastTouchedAt: Date.now(),
     };
@@ -411,7 +459,7 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
               setShowMore(!showMore);
             }}
           >
-            更多属性（开封期 / 保修 / 库存 / 季节）
+            更多属性（开封期 / 保修 / 库存 / 资产档案）
           </summary>
           {showMore && (
             <div className="grid grid-cols-2 gap-3 mt-3 p-3 bg-slate-50 rounded-lg">
@@ -440,6 +488,30 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
                 <select value={season} onChange={(e) => setSeason(e.target.value as Season)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm bg-white">
                   {SEASONS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
+              </div>
+              <div>
+                <label className="block text-xs text-ink-500 mb-1">品牌</label>
+                <input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="如 Apple" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs text-ink-500 mb-1">型号</label>
+                <input value={modelNumber} onChange={(e) => setModelNumber(e.target.value)} placeholder="Model" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs text-ink-500 mb-1">序列号</label>
+                <input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="Serial" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs text-ink-500 mb-1">购买价</label>
+                <input type="number" value={purchasePrice} onChange={(e) => setPurchasePrice(e.target.value)} placeholder="金额" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs text-ink-500 mb-1">说明书链接</label>
+                <input value={manualUrl} onChange={(e) => setManualUrl(e.target.value)} placeholder="https://..." className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs text-ink-500 mb-1">收据 / 资产备注</label>
+                <textarea value={receiptNote} onChange={(e) => setReceiptNote(e.target.value)} rows={2} placeholder="小票位置、铭牌照片、保险备注等" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
               </div>
             </div>
           )}
