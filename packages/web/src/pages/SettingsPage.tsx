@@ -9,10 +9,8 @@ import {
   unbindSyncDirectory,
 } from '@home-inventory/core';
 import { Header } from '../components/Header';
-import { openModal } from '../components/Modal';
 import { toast } from '../components/Toast';
 import { getStorage, useStore } from '../stores/useStore';
-import ApiConfigDialog from './modals/ApiConfigDialog';
 import { PinIcon } from '../components/PinIcon';
 
 export default function SettingsPage() {
@@ -118,16 +116,6 @@ export default function SettingsPage() {
     <div>
       <Header title="设置" />
       <div className="px-4 md:px-6 py-4 space-y-6">
-        <section className="bg-white rounded-2xl shadow-soft p-5">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="font-semibold mb-1 inline-flex items-center gap-2"><PinIcon name="ai" size={30} />AI 识别与对话</h2>
-              <p className="text-xs text-ink-500">密钥从 Vercel 环境变量读取；这里仅测试后端连接与覆盖模型名。</p>
-            </div>
-            <button onClick={() => openModal((close) => <ApiConfigDialog onClose={close} />)} className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm">AI 后端</button>
-          </div>
-        </section>
-
         <section className="bg-white rounded-2xl shadow-soft p-5">
           <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="overview" size={30} />数据概览</h2>
           <div className="grid grid-cols-3 md:grid-cols-6 gap-3 text-sm">

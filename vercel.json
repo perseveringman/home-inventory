@@ -12,17 +12,7 @@
   "cleanUrls": true,
   "trailingSlash": false,
   "rewrites": [
-    { "source": "/rooms", "destination": "/index.html" },
-    { "source": "/room/:id", "destination": "/index.html" },
-    { "source": "/photo/:id", "destination": "/index.html" },
-    { "source": "/scan/:id", "destination": "/index.html" },
-    { "source": "/items", "destination": "/index.html" },
-    { "source": "/search", "destination": "/index.html" },
-    { "source": "/inbox", "destination": "/index.html" },
-    { "source": "/overview", "destination": "/index.html" },
-    { "source": "/subscribe", "destination": "/index.html" },
-    { "source": "/labels", "destination": "/index.html" },
-    { "source": "/settings", "destination": "/index.html" }
+    { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
     {
