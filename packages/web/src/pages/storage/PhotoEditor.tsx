@@ -10,7 +10,7 @@ import {
 } from '@home-inventory/core';
 import { BlobImage } from '../../components/BlobImage';
 import { openModal } from '../../components/Modal';
-import { PinIcon } from '../../components/PinIcon';
+import { Glyph } from '../../components/Glyph';
 import { toast } from '../../components/Toast';
 import { photoStageStyle } from '../../lib/photoStage';
 import { getStorage, useStore } from '../../stores/useStore';
@@ -172,16 +172,16 @@ export default function PhotoEditor({ photo, cabinets }: Props) {
     <div>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button onClick={runAI} disabled={busy} className="px-3 py-1.5 rounded-lg bg-brand-500 text-white text-sm disabled:bg-ink-300">
-          {busy ? '识别中…' : <span className="inline-flex items-center gap-1"><PinIcon name="ai" size={22} tile={false} />AI 识别</span>}
+          {busy ? '识别中…' : <><Glyph name="sparkle" size={16} />AI 识别</>}
         </button>
         <button onClick={() => setMode(mode === 'draw' ? 'view' : 'draw')} className={`px-3 py-1.5 rounded-lg text-sm ${mode === 'draw' ? 'bg-emerald-500 text-white' : 'bg-white shadow-soft'}`}>
-          ▣ 手动框选
+          <Glyph name="plus" size={16} />手动框选
         </button>
         <button onClick={() => setMode(mode === 'edit' ? 'view' : 'edit')} className={`px-3 py-1.5 rounded-lg text-sm ${mode === 'edit' ? 'bg-amber-500 text-white' : 'bg-white shadow-soft'}`}>
-          <span className="inline-flex items-center gap-1"><PinIcon name="edit" size={22} tile={false} />编辑边框</span>
+          <Glyph name="pencil" size={16} />编辑边框
         </button>
         <button onClick={removePhoto} className="ml-auto px-3 py-1.5 rounded-lg text-sm bg-red-50 text-red-600">
-          <span className="inline-flex items-center gap-1"><PinIcon name="trash" size={22} tile={false} />删除照片</span>
+          <Glyph name="trash" size={16} />删除照片
         </button>
       </div>
       <div

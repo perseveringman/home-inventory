@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useStore } from '../../stores/useStore';
 import { Header } from '../../components/Header';
 import { EmptyState } from '../../components/EmptyState';
@@ -9,19 +9,29 @@ import CabinetDialog from '../modals/CabinetDialog';
 import { BlobImage } from '../../components/BlobImage';
 import PhotoEditor from './PhotoEditor';
 import { PinIcon } from '../../components/PinIcon';
+import { Glyph } from '../../components/Glyph';
 
 export default function PhotoDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const photos = useStore((s) => s.photos);
   const cabinets = useStore((s) => s.cabinets);
   const items = useStore((s) => s.items);
   const rooms = useStore((s) => s.rooms);
+  const scanSessions = useStore((s) => s.scanSessions);
 
   const photo = photos.find((p) => p.id === id);
   const room = photo ? rooms.find((r) => r.id === photo.roomId) : null;
   const photoCabinets = useMemo(
     () => cabinets.filter((c) => c.photoId === id),
     [cabinets, id]
+  );
+  const reviewSession = useMemo(
+    () =>
+      scanSessions
+        .filter((session) => session.photoId === id && session.status === 'reviewing')
+        .sort((a, b) => b.createdAt - a.createdAt)[0],
+    [scanSessions, id]
   );
 
   if (!photo) {
@@ -47,16 +57,42 @@ export default function PhotoDetailPage() {
         subtitle={`${photoCabinets.length} 个柜子`}
         back
         actions={
+          <div className="flex gap-2">
+            {reviewSession && (
+              <button
+                onClick={() => navigate(`/scan/${reviewSession.id}`)}
+                className="px-3 py-1.5 bg-brand-50 text-brand-700 rounded-lg text-sm"
+              >
+                继续审核
+              </button>
+            )}
             <button
               onClick={openAddItem}
               className="px-3 py-1.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm"
             >
-              <span className="inline-flex items-center gap-1"><PinIcon name="add" size={24} tile={false} />物品</span>
+              <Glyph name="plus" size={15} strokeWidth={1.8} />物品
             </button>
+          </div>
         }
       />
 
       <div className="px-4 md:px-6 py-4">
+        {reviewSession && (
+          <button
+            onClick={() => navigate(`/scan/${reviewSession.id}`)}
+            className="mb-4 w-full rounded-2xl bg-white border border-brand-100 shadow-soft p-4 text-left hover:shadow-md transition flex items-center gap-3"
+          >
+            <PinIcon name="spark" size={46} />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-ink-900">这张照片有 AI 审核未确认</div>
+              <div className="text-xs text-ink-500 mt-0.5">
+                {reviewSession.candidates.filter((candidate) => candidate.reviewStatus !== 'rejected').length} 个候选待应用
+              </div>
+            </div>
+            <span className="text-sm text-brand-700">进入</span>
+          </button>
+        )}
+
         <PhotoEditor photo={photo} cabinets={photoCabinets} />
 
         {photoCabinets.length > 0 ? (

@@ -24,18 +24,20 @@ export function Scenebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const items = useStore((s) => s.items);
+  const scanSessions = useStore((s) => s.scanSessions);
   const subscriptions = useStore((s) => s.subscriptions);
 
   const badge = useMemo(() => {
     const pending = items.filter((i) => i.status === 'pending').length;
+    const reviewing = scanSessions.filter((session) => session.status === 'reviewing').length;
     const itemCritical = computeItemEvents(items).filter(
       (e) => e.level === 'critical'
     ).length;
     const subCritical = computeSubscriptionEvents(subscriptions).filter(
       (e) => e.level === 'critical'
     ).length;
-    return pending + itemCritical + subCritical;
-  }, [items, subscriptions]);
+    return reviewing + pending + itemCritical + subCritical;
+  }, [items, scanSessions, subscriptions]);
 
   const isActive = (scene: Scene) => {
     const p = location.pathname;
@@ -45,6 +47,7 @@ export function Scenebar() {
         p.startsWith('/rooms') ||
         p.startsWith('/room/') ||
         p.startsWith('/photo/') ||
+        p.startsWith('/scan/') ||
         p.startsWith('/items') ||
         p.startsWith('/search')
       );

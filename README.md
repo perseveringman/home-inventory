@@ -42,6 +42,12 @@ pnpm typecheck    # 全包类型检查
 >
 > `typecheck` 不受影响，两种 Node 都可用。
 
+## 部署
+
+Vercel 部署配置与已踩坑记录见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+
+特别注意：本项目开启了 `cleanUrls: true`，Vite SPA 子路由 fallback 的 rewrite destination 必须写成 `/`，不要写成 `/index.html`，否则 `/rooms`、`/settings` 等子路由会在生产环境直开时返回 Vercel `404: NOT_FOUND`。
+
 ## Shadow OAuth / Card 接入
 
 本项目已内置 Shadow 外部应用接入点：

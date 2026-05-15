@@ -16,6 +16,7 @@ import { BlobImage } from '../../components/BlobImage';
 import { toast } from '../../components/Toast';
 import { getStorage, useStore } from '../../stores/useStore';
 import { PinIcon } from '../../components/PinIcon';
+import { Glyph } from '../../components/Glyph';
 
 interface Props {
   item?: Item;
@@ -418,7 +419,7 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
               placeholder="自定义标签"
               className="flex-1 border border-slate-200 rounded-lg px-2 py-1 text-sm"
             />
-            <button onClick={addCustomTag} className="px-3 py-1 bg-slate-100 rounded-lg text-sm"><PinIcon name="add" size={22} tile={false} /></button>
+            <button onClick={addCustomTag} className="px-3 py-1 bg-slate-100 rounded-lg text-sm" aria-label="添加标签"><Glyph name="plus" size={15} strokeWidth={1.8} /></button>
           </div>
         </div>
 

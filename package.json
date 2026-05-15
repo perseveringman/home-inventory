@@ -8,6 +8,7 @@
     "build": "pnpm --filter @home-inventory/web build",
     "preview": "pnpm --filter @home-inventory/web preview",
     "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @home-inventory/core test",
     "lint": "pnpm -r lint"
   },
   "packageManager": "pnpm@9.12.0",

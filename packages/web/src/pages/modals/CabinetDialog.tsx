@@ -12,6 +12,7 @@ import { toast } from '../../components/Toast';
 import { BlobImage } from '../../components/BlobImage';
 import { openModal } from '../../components/Modal';
 import { PinIcon } from '../../components/PinIcon';
+import { Glyph } from '../../components/Glyph';
 import ItemDialog from './ItemDialog';
 
 interface Props {
@@ -172,12 +173,12 @@ export default function CabinetDialog({ cabinet, onClose }: Props) {
           <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="备注" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
           <div className="flex items-center gap-2">
             {blob && <BlobImage blob={blob} className="w-12 h-12 rounded-lg object-cover" />}
-            <label className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-sm cursor-pointer">
-              <span className="inline-flex items-center gap-1"><PinIcon name="gallery" size={22} tile={false} />选图</span>
+            <label className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-sm cursor-pointer inline-flex items-center gap-1.5">
+              <Glyph name="image" size={16} />选图
               <input type="file" accept="image/*" hidden onChange={pickPhoto} />
             </label>
-            <label className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-sm cursor-pointer">
-              <span className="inline-flex items-center gap-1"><PinIcon name="camera" size={22} tile={false} />拍照</span>
+            <label className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-sm cursor-pointer inline-flex items-center gap-1.5">
+              <Glyph name="camera" size={16} />拍照
               <input type="file" accept="image/*" capture="environment" hidden onChange={pickPhoto} />
             </label>
             <button onClick={addItem} className="ml-auto px-4 py-2 rounded-lg bg-brand-500 text-white text-sm">添加</button>

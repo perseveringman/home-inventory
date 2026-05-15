@@ -174,6 +174,29 @@ export type SubCategory =
 
 export type SubCycle = 'weekly' | 'monthly' | 'quarterly' | 'yearly' | 'custom';
 export type SubStatus = 'active' | 'paused' | 'cancelled';
+export type SubscriptionSource =
+  | 'manual'
+  | 'ai_text'
+  | 'ai_vision'
+  | 'csv'
+  | 'email'
+  | 'sms'
+  | 'bank';
+export type SubscriptionDecision = 'keep' | 'review' | 'cancel';
+export type CancellationDifficulty = 'easy' | 'medium' | 'hard';
+
+export interface SubscriptionPricePoint {
+  amount: number;
+  /** yyyy-mm-dd */
+  date: string;
+  note?: string;
+}
+
+export interface CancellationStep {
+  id: ID;
+  text: string;
+  done?: boolean;
+}
 
 export interface Subscription {
   id: ID;
@@ -194,6 +217,24 @@ export interface Subscription {
   note?: string;
   status: SubStatus;
   lastPaidAt?: string;
+
+  // AI native subscription brain
+  planName?: string;
+  owner?: string;
+  usageNote?: string;
+  lastUsedAt?: string;
+  decision?: SubscriptionDecision;
+  reviewBeforeDays?: number | null;
+  source?: SubscriptionSource;
+  confidence?: number;
+  evidenceText?: string;
+  importBatchId?: string;
+  priceHistory?: SubscriptionPricePoint[];
+  cancelUrl?: string;
+  cancelDifficulty?: CancellationDifficulty;
+  cancellationPlan?: CancellationStep[];
+  cancellationCheckedAt?: string;
+
   createdAt: number;
 }
 

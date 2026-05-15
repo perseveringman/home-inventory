@@ -1,5 +1,6 @@
 import type { Room } from '@home-inventory/core';
 import { PinIcon, roomIconName } from './PinIcon';
+import { Glyph } from './Glyph';
 
 interface Props {
   room: Room;
@@ -24,18 +25,18 @@ export function RoomMenu({ room, onEdit, onDelete, onClose }: Props) {
             onClose();
             onEdit(room);
           }}
-          className="w-full text-left px-4 py-3 rounded-xl bg-slate-50 hover:bg-slate-100"
+          className="w-full text-left px-4 py-3 rounded-xl bg-slate-50 hover:bg-slate-100 inline-flex items-center gap-2"
         >
-          <PinIcon name="edit" size={24} tile={false} /> 编辑房间名称和图标
+          <Glyph name="pencil" size={16} />编辑房间名称和图标
         </button>
         <button
           onClick={() => {
             onClose();
             onDelete(room);
           }}
-          className="w-full text-left px-4 py-3 rounded-xl bg-red-50 hover:bg-red-100 text-red-600"
+          className="w-full text-left px-4 py-3 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 inline-flex items-center gap-2"
         >
-          <PinIcon name="trash" size={24} tile={false} /> 删除房间及其所有数据
+          <Glyph name="trash" size={16} />删除房间及其所有数据
         </button>
       </div>
     </div>

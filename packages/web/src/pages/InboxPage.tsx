@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   GLOBAL_ROOM_ID,
   REMINDER_KIND_LABEL,
@@ -29,14 +30,25 @@ const LEVEL_STYLE: Record<string, string> = {
 const KIND_ORDER: ReminderKind[] = ['expiry', 'opened', 'warranty', 'lowstock', 'seasonal', 'dust', 'subscription'];
 
 export default function InboxPage() {
+  const navigate = useNavigate();
   const items = useStore((s) => s.items);
   const rooms = useStore((s) => s.rooms);
   const cabinets = useStore((s) => s.cabinets);
+  const photos = useStore((s) => s.photos);
+  const scanSessions = useStore((s) => s.scanSessions);
   const subscriptions = useStore((s) => s.subscriptions);
   const reloadAll = useStore((s) => s.reloadAll);
   const [plan, setPlan] = useState<PlacementPlan | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [applying, setApplying] = useState(false);
+
+  const pendingReviewSessions = useMemo(
+    () =>
+      scanSessions
+        .filter((session) => session.status === 'reviewing')
+        .sort((a, b) => b.createdAt - a.createdAt),
+    [scanSessions]
+  );
 
   const pendingGroups = useMemo(() => {
     const map = new Map<string, typeof items>();
@@ -54,7 +66,10 @@ export default function InboxPage() {
     return KIND_ORDER.map((kind) => [kind, map.get(kind) || []] as const).filter(([, list]) => list.length);
   }, [items, subscriptions]);
 
-  const totalCount = pendingGroups.reduce((sum, [, list]) => sum + list.length, 0) + eventsByKind.reduce((sum, [, list]) => sum + list.length, 0);
+  const totalCount =
+    pendingReviewSessions.length +
+    pendingGroups.reduce((sum, [, list]) => sum + list.length, 0) +
+    eventsByKind.reduce((sum, [, list]) => sum + list.length, 0);
 
   const roomLabel = (roomId: string) => {
     if (roomId === GLOBAL_ROOM_ID) return '全屋自由区';
@@ -199,6 +214,44 @@ export default function InboxPage() {
         <div className="px-4 md:px-6 py-4">
           <EmptyState icon="spark" title="待处理列表空空如也" description="新上传的照片或提醒事件会出现在这里" />
         </div>
+      )}
+
+      {pendingReviewSessions.length > 0 && (
+        <section className="px-4 md:px-6 py-3">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-semibold inline-flex items-center gap-2">
+              <PinIcon name="spark" size={30} />AI 扫描审核
+            </h2>
+            <span className="text-xs px-2 py-1 rounded-full bg-brand-50 text-brand-700">
+              {pendingReviewSessions.length} 待确认
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {pendingReviewSessions.map((session) => {
+              const photo = photos.find((item) => item.id === session.photoId);
+              const liveCandidates = session.candidates.filter((candidate) => candidate.reviewStatus !== 'rejected');
+              const cabinetCount = liveCandidates.filter((candidate) => candidate.kind === 'cabinet').length;
+              const itemCount = liveCandidates.filter((candidate) => candidate.kind === 'item').length;
+              return (
+                <button
+                  key={session.id}
+                  onClick={() => navigate(`/scan/${session.id}`)}
+                  className="text-left bg-white rounded-2xl shadow-soft p-3 hover:shadow-md transition flex items-center gap-3"
+                >
+                  <BlobImage blob={photo?.blob || null} emoji="spark" className="w-16 h-16 rounded-xl object-cover bg-brand-50" />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium truncate">{roomLabel(session.roomId)}</div>
+                    <div className="text-xs text-ink-500 mt-0.5">
+                      {cabinetCount} 个柜子 · {itemCount} 件物品候选
+                    </div>
+                    <div className="text-[11px] text-brand-700 mt-1">继续审核</div>
+                  </div>
+                  <span className="text-ink-400">›</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
       )}
 
       {pendingGroups.map(([roomId, list]) => (

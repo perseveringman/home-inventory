@@ -9,6 +9,7 @@ import { toast } from '../../components/Toast';
 import { useStore } from '../../stores/useStore';
 import ItemDialog from '../modals/ItemDialog';
 import { PinIcon, roomIconName } from '../../components/PinIcon';
+import { Glyph } from '../../components/Glyph';
 
 type FilterKey = 'placed' | 'pending' | string;
 
@@ -57,7 +58,7 @@ export default function ItemsPage() {
 
   return (
     <div>
-      <Header title="所有物品" subtitle={`${items.filter((item) => item.status !== 'pending').length} 件已归位`} actions={<button onClick={add} className="px-3 py-1.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm inline-flex items-center gap-1"><PinIcon name="add" size={24} tile={false} />新增</button>} />
+      <Header title="所有物品" subtitle={`${items.filter((item) => item.status !== 'pending').length} 件已归位`} actions={<button onClick={add} className="px-3 py-1.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-sm inline-flex items-center gap-1"><Glyph name="plus" size={15} strokeWidth={1.8} />新增</button>} />
       <div className="px-4 md:px-6 pt-3 pb-2 flex gap-2 overflow-x-auto no-scrollbar">
         {filterBtn('placed', `已归位 ${items.filter((item) => item.status !== 'pending').length}`)}
         {filterBtn('pending', `待归位 ${items.filter((item) => item.status === 'pending').length}`)}

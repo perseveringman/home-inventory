@@ -3,15 +3,20 @@ import { useLocation } from 'react-router-dom';
 import {
   buildChatSystemPrompt,
   applyInventoryActionPlan,
+  applySubscriptionActionPlan,
   describeInventoryAction,
   extractInventoryActionPlan,
+  extractSubscriptionActionPlan,
+  previewSubscriptionAction,
   extractRenameSuggestions,
   stripInventoryActionBlock,
+  stripSubscriptionActionBlock,
   streamChatWithAI,
   stripRenameBlock,
   type ChatMessage,
   type InventoryActionPlan,
   type RenameSuggestion,
+  type SubscriptionActionPlan,
 } from '@home-inventory/core';
 import { getStorage, useStore } from '../stores/useStore';
 import { toast } from './Toast';
@@ -25,6 +30,7 @@ interface Props {
 
 const QUICK_PROMPTS = [
   '待处理里有哪些物品？',
+  '审计一下我的订阅：哪些该留，哪些该复核？',
   '本月订阅一共要扣多少？最近哪条要扣？',
   '哪些东西快过期或已过期？',
   '哪些柜子物品偏多，建议怎么分流？',
@@ -83,6 +89,10 @@ function MessageBody({ text }: { text: string }) {
   );
 }
 
+function cleanAssistantText(text: string): string {
+  return stripSubscriptionActionBlock(stripInventoryActionBlock(stripRenameBlock(text)));
+}
+
 export function ChatDrawer({ open, onClose }: Props) {
   const location = useLocation();
   const rooms = useStore((s) => s.rooms);
@@ -96,6 +106,7 @@ export function ChatDrawer({ open, onClose }: Props) {
   const [streaming, setStreaming] = useState(false);
   const [renames, setRenames] = useState<RenameSuggestion[]>([]);
   const [actionPlan, setActionPlan] = useState<InventoryActionPlan | null>(null);
+  const [subscriptionPlan, setSubscriptionPlan] = useState<SubscriptionActionPlan | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // Derive current room id from path (e.g. /room/abc, /photo/xyz handled in caller).
@@ -124,6 +135,7 @@ export function ChatDrawer({ open, onClose }: Props) {
     setInput('');
     setRenames([]);
     setActionPlan(null);
+    setSubscriptionPlan(null);
     setStreaming(true);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -132,15 +144,17 @@ export function ChatDrawer({ open, onClose }: Props) {
         getStorage(),
         [{ role: 'system', content: systemPrompt }, ...history],
         (_delta, current) => {
-          setMessages([...history, { role: 'assistant', content: stripInventoryActionBlock(stripRenameBlock(current)) }]);
+          setMessages([...history, { role: 'assistant', content: cleanAssistantText(current) }]);
           setRenames(extractRenameSuggestions(current));
           setActionPlan(extractInventoryActionPlan(current));
+          setSubscriptionPlan(extractSubscriptionActionPlan(current));
         },
         controller.signal
       );
-      setMessages([...history, { role: 'assistant', content: stripInventoryActionBlock(stripRenameBlock(full)) }]);
+      setMessages([...history, { role: 'assistant', content: cleanAssistantText(full) }]);
       setRenames(extractRenameSuggestions(full));
       setActionPlan(extractInventoryActionPlan(full));
+      setSubscriptionPlan(extractSubscriptionActionPlan(full));
     } catch (err: any) {
       if (err?.name !== 'AbortError') toast('AI 对话失败：' + (err?.message || 'unknown'), 3000);
     } finally {
@@ -173,16 +187,28 @@ export function ChatDrawer({ open, onClose }: Props) {
     }
   };
 
+  const applySubPlan = async () => {
+    if (!subscriptionPlan) return;
+    try {
+      const count = await applySubscriptionActionPlan(getStorage(), subscriptionPlan);
+      await reloadAll();
+      setSubscriptionPlan(null);
+      toast(count ? `已应用 ${count} 项订阅变更` : '没有可应用的订阅变更');
+    } catch (err: any) {
+      toast('应用失败：' + (err?.message || 'unknown'), 3000);
+    }
+  };
+
   return (
     <div className="chat-backdrop" onClick={onClose}>
       <div className="chat-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between p-4 border-b border-ink-200/60">
           <div>
             <h3 className="font-display text-[17px] inline-flex items-center gap-2 text-ink-900">
-              <PinIcon name="chat" size={26} />AI 收纳助手
+              <PinIcon name="chat" size={26} />AI 家务管家
             </h3>
             <p className="text-[11.5px] text-ink-500 mt-0.5">
-              已知晓你家全部房间、柜子、待处理物品与订阅
+              已知晓房间、柜子、待处理物品、提醒与订阅
             </p>
           </div>
           <button
@@ -278,6 +304,39 @@ export function ChatDrawer({ open, onClose }: Props) {
                   <div key={index} className="text-[12.5px] text-ink-700 flex gap-2">
                     <span className="text-brand-600">{index + 1}.</span>
                     <span>{describeInventoryAction(action)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {subscriptionPlan && (
+            <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[12.5px] font-semibold text-emerald-700">
+                    可执行订阅方案
+                  </div>
+                  <div className="text-[11.5px] text-emerald-700/80 mt-0.5">
+                    {subscriptionPlan.summary}
+                  </div>
+                </div>
+                <button
+                  onClick={applySubPlan}
+                  className="px-2.5 py-1 rounded-full bg-emerald-600 text-white text-[11.5px]"
+                >
+                  应用
+                </button>
+              </div>
+              <div className="space-y-1">
+                {subscriptionPlan.actions.map((action, index) => (
+                  <div key={index} className="text-[12.5px] text-ink-700 flex gap-2">
+                    <span className="text-emerald-700">{index + 1}.</span>
+                    <span className="min-w-0">
+                      <span>{previewSubscriptionAction(action, subscriptions).title}</span>
+                      <span className="block text-[11.5px] text-ink-500 mt-0.5">
+                        {previewSubscriptionAction(action, subscriptions).detail}
+                      </span>
+                    </span>
                   </div>
                 ))}
               </div>

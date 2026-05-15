@@ -17,7 +17,8 @@ const TABS: Tab[] = [
       p === '/' ||
       p.startsWith('/rooms') ||
       p.startsWith('/room/') ||
-      p.startsWith('/photo/'),
+      p.startsWith('/photo/') ||
+      p.startsWith('/scan/'),
   },
   { path: '/items', label: '物品', icon: 'items' },
   { path: '/search', label: '搜索', icon: 'search' },

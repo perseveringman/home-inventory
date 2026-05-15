@@ -170,6 +170,24 @@ export function buildChatSystemPrompt(
     const active = subscriptions.filter((s) => s.status === 'active');
     const paused = subscriptions.filter((s) => s.status !== 'active');
     const monthly = active.reduce((sum, s) => sum + subscriptionMonthlyCost(s), 0);
+    const formatSubLine = (s: Subscription) => {
+      const cat = SUB_CAT_NAME[s.category] || s.category;
+      const cycle = CYCLE_NAME[s.cycle] || s.cycle;
+      const due = s.nextDueAt ? `下次 ${s.nextDueAt}` : '未设定';
+      const extras = [
+        s.planName ? `套餐 ${s.planName}` : '',
+        s.autoRenew === false ? '不续费' : '',
+        s.paymentMethod ? `支付 ${s.paymentMethod}` : '',
+        s.url || s.cancelUrl ? '有管理/退订链接' : '缺管理链接',
+        s.decision ? `决策 ${s.decision}` : '',
+        s.usageNote ? `使用 ${s.usageNote}` : '',
+        s.priceHistory?.length ? `价格历史 ${s.priceHistory.map((p) => `${p.date}:¥${p.amount}`).slice(-3).join('/')}` : '',
+        s.status !== 'active' ? `状态 ${s.status}` : '',
+      ].filter(Boolean);
+      return `- [subId=${s.id}] ${s.name}（${cat}）¥${s.amount.toFixed(2)}/${cycle} · ${due}${
+        extras.length ? ` · ${extras.join(' · ')}` : ''
+      }`;
+    };
     const subLines = active
       .slice()
       .sort(
@@ -178,15 +196,13 @@ export function buildChatSystemPrompt(
           new Date(b.nextDueAt || '2999-01-01').getTime()
       )
       .slice(0, 30)
-      .map((s) => {
-        const cat = SUB_CAT_NAME[s.category] || s.category;
-        const cycle = CYCLE_NAME[s.cycle] || s.cycle;
-        const due = s.nextDueAt ? `下次 ${s.nextDueAt}` : '未设定';
-        return `- ${s.name}（${cat}）¥${s.amount.toFixed(2)}/${cycle} · ${due}`;
-      });
+      .map(formatSubLine);
+    const pausedLines = paused.slice(0, 12).map(formatSubLine);
     subBlock = `\n【订阅（生效 ${active.length} 条，月均 ¥${monthly.toFixed(0)}${
       paused.length ? `；另暂停 ${paused.length} 条` : ''
-    }）】\n${subLines.join('\n') || '（无生效订阅）'}`;
+    }）】\n${subLines.join('\n') || '（无生效订阅）'}${
+      pausedLines.length ? `\n暂停/取消：\n${pausedLines.join('\n')}` : ''
+    }`;
   }
 
   // ===== Reminder events =====
@@ -217,7 +233,7 @@ export function buildChatSystemPrompt(
     if (r) locationParts.push(`正在浏览房间「${r.name}」`);
   }
 
-  return `你是这个家居收纳应用的 AI 收纳助手。${locationParts.join('；')}。
+  return `你是这个家居收纳应用的 AI 收纳与订阅管家。${locationParts.join('；')}。
 
 【家庭概况】
 ${rooms.length} 个房间 · ${totalCabinets} 个储物单元 · ${placed.length} 件已归位 · ${pending.length} 件待处理 · ${subscriptions.length} 条订阅。
@@ -233,6 +249,7 @@ ${pendingBlock}${subBlock}${eventsBlock}
 4. 给储物单元起更语义化的名字（仅当用户主动要重命名时输出 \`\`\`rename\`\`\` 块）。
 5. 给出整理、分类、空间利用的简洁建议。
 6. 当用户明确要求你“执行、批量归位、打标签、移动、更新、生成二维码标签”时，先用自然语言说明方案，然后追加 \`\`\`inventory_actions\`\`\` 块，让前端展示 diff 后由用户确认执行。
+7. 作为订阅管家，帮用户从一句话、账单文本、CSV、邮件/短信/银行账单文本或扣款截图 OCR 文本中建立订阅；审计重复订阅、涨价、快续费、缺管理链接、年度大额续费、可暂停项；当用户明确要求“新增、更新、合并、暂停、恢复、取消、标记已付、批量处理订阅”时，先说明理由与影响，再追加 \`\`\`subscription_actions\`\`\` 块。
 
 【重要：重命名建议的输出格式】
 仅当用户明确请求重命名/改名时，在正文之后追加：
@@ -255,6 +272,24 @@ id 必须严格使用 [id=xxx] 的原值；newName 控制在 12 个字以内；�
 }
 \`\`\`
 只使用清单中出现过的 id；没有把握时不要输出操作块，改为询问用户确认。不要直接说“已完成”，因为需要用户点击应用。
+
+【重要：订阅操作的输出格式】
+仅当用户明确要求创建/修改/暂停/恢复/取消/标记订阅已付时，在正文之后追加：
+\`\`\`subscription_actions
+{
+  "summary": "一句话说明要做什么",
+  "actions": [
+    {"type":"createSubscription","draft":{"name":"Netflix","category":"membership","amount":68,"cycle":"monthly","nextDueAt":"2026-05-20","paymentMethod":"招行信用卡","url":"https://...","note":"从账单文本识别","autoRenew":true}},
+    {"type":"updateSubscription","subId":"<subId>","patch":{"amount":88,"nextDueAt":"2026-06-01","url":"https://...","cancelUrl":"https://...","decision":"review","usageNote":"最近少用，续费前确认","priceHistory":[{"amount":68,"date":"2026-05-01","note":"旧价格"},{"amount":88,"date":"2026-06-01","note":"新价格"}],"cancellationPlan":[{"id":"step-1","text":"打开账户设置"},{"id":"step-2","text":"关闭自动续费"}],"note":"价格上涨，续费前复核"}},
+    {"type":"mergeSubscriptions","sourceSubId":"<重复项 subId>","targetSubId":"<保留项 subId>","patch":{"note":"合并重复订阅记录"}},
+    {"type":"markPaid","subId":"<subId>"},
+    {"type":"pauseSubscription","subId":"<subId>"},
+    {"type":"resumeSubscription","subId":"<subId>"},
+    {"type":"cancelSubscription","subId":"<subId>"}
+  ]
+}
+\`\`\`
+subId 必须严格使用上面订阅清单里的 [subId=xxx] 原值。category 只能是 software/loan/utility/rent/membership/insurance/telecom/other；cycle 只能是 weekly/monthly/quarterly/yearly/custom。日期必须是 yyyy-mm-dd。没有把握时不要输出操作块，改为询问用户确认。不要直接说“已完成”，因为需要用户点击应用。
 
 回答风格：简洁、有条理、说人话。引用具体物品/订阅时贴近清单中的命名，不要捏造不存在的条目。`;
 }
@@ -344,7 +379,7 @@ export async function streamChatWithAI(
 ): Promise<string> {
   let lastError: unknown;
   try {
-    return streamOpenAiCompat(
+    return await streamOpenAiCompat(
       'deepseek',
       DEEPSEEK_API,
       undefined,
@@ -360,7 +395,7 @@ export async function streamChatWithAI(
   }
 
   try {
-    return streamOpenAiCompat(
+    return await streamOpenAiCompat(
       'openrouter',
       OPENROUTER_API,
       undefined,

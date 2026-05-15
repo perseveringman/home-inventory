@@ -6,6 +6,7 @@ import {
   uid,
   type SubCategory,
   type SubCycle,
+  type SubscriptionDecision,
   type Subscription,
 } from '@home-inventory/core';
 import { toast } from '../../components/Toast';
@@ -31,6 +32,12 @@ export default function SubscriptionDialog({ sub, onClose }: Props) {
   const [autoRenew, setAutoRenew] = useState(sub?.autoRenew ?? true);
   const [paymentMethod, setPaymentMethod] = useState(sub?.paymentMethod || '');
   const [url, setUrl] = useState(sub?.url || '');
+  const [planName, setPlanName] = useState(sub?.planName || '');
+  const [owner, setOwner] = useState(sub?.owner || '');
+  const [usageNote, setUsageNote] = useState(sub?.usageNote || '');
+  const [decision, setDecision] = useState<SubscriptionDecision | ''>(sub?.decision || '');
+  const [reviewBeforeDays, setReviewBeforeDays] = useState(sub?.reviewBeforeDays != null ? String(sub.reviewBeforeDays) : '');
+  const [cancelUrl, setCancelUrl] = useState(sub?.cancelUrl || '');
   const [note, setNote] = useState(sub?.note || '');
 
   const build = (): Subscription | null => {
@@ -39,12 +46,22 @@ export default function SubscriptionDialog({ sub, onClose }: Props) {
       toast('请输入名称');
       return null;
     }
+    const nextAmount = +amount || 0;
+    const today = new Date().toISOString().slice(0, 10);
+    const priceHistory =
+      sub && sub.amount !== nextAmount
+        ? [
+            ...(sub.priceHistory || []),
+            { amount: sub.amount, date: sub.lastPaidAt || sub.startedAt || today, note: '变更前金额' },
+            { amount: nextAmount, date: nextDueAt || today, note: '手动更新金额' },
+          ].slice(-40)
+        : sub?.priceHistory || [{ amount: nextAmount, date: startedAt || nextDueAt || today, note: '初始记录' }];
     return {
       id: sub?.id || uid(),
       name: trimmed,
       icon: icon.trim() || undefined,
       category,
-      amount: +amount || 0,
+      amount: nextAmount,
       cycle,
       cycleDays: cycle === 'custom' ? +cycleDays || 30 : undefined,
       nextDueAt: nextDueAt || undefined,
@@ -53,6 +70,20 @@ export default function SubscriptionDialog({ sub, onClose }: Props) {
       autoRenew,
       paymentMethod: paymentMethod.trim() || undefined,
       url: url.trim() || undefined,
+      planName: planName.trim() || undefined,
+      owner: owner.trim() || undefined,
+      usageNote: usageNote.trim() || undefined,
+      decision: decision || undefined,
+      reviewBeforeDays: reviewBeforeDays ? +reviewBeforeDays || null : undefined,
+      cancelUrl: cancelUrl.trim() || undefined,
+      priceHistory,
+      source: sub?.source || 'manual',
+      confidence: sub?.confidence,
+      evidenceText: sub?.evidenceText,
+      importBatchId: sub?.importBatchId,
+      cancelDifficulty: sub?.cancelDifficulty,
+      cancellationPlan: sub?.cancellationPlan,
+      cancellationCheckedAt: sub?.cancellationCheckedAt,
       note: note.trim() || undefined,
       status: sub?.status || 'active',
       createdAt: sub?.createdAt || Date.now(),
@@ -129,6 +160,7 @@ export default function SubscriptionDialog({ sub, onClose }: Props) {
           </label>
         )}
 
+        <input value={planName} onChange={(e) => setPlanName(e.target.value)} placeholder="套餐名，如 Plus / 家庭版 / 年度包" className="w-full border border-slate-200 rounded-lg px-3 py-2" />
         <div className="grid grid-cols-2 gap-3">
           <label className="block text-sm font-medium">开始日期<input type="date" value={startedAt} onChange={(e) => setStartedAt(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2" /></label>
           <label className="block text-sm font-medium">结束日期<input type="date" value={endAt} onChange={(e) => setEndAt(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2" /></label>
@@ -136,7 +168,22 @@ export default function SubscriptionDialog({ sub, onClose }: Props) {
         <label className="block text-sm font-medium">下次扣款日<input type="date" value={nextDueAt} onChange={(e) => setNextDueAt(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2" /></label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} /> 自动续费</label>
         <input value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} placeholder="支付方式，如 招行信用卡 / 微信" className="w-full border border-slate-200 rounded-lg px-3 py-2" />
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="退订/管理链接" className="w-full border border-slate-200 rounded-lg px-3 py-2" />
+        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="管理链接" className="w-full border border-slate-200 rounded-lg px-3 py-2" />
+        <input value={cancelUrl} onChange={(e) => setCancelUrl(e.target.value)} placeholder="退订链接" className="w-full border border-slate-200 rounded-lg px-3 py-2" />
+        <div className="grid grid-cols-2 gap-3">
+          <input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="使用人 / 归属人" className="w-full border border-slate-200 rounded-lg px-3 py-2" />
+          <select value={decision} onChange={(e) => setDecision(e.target.value as SubscriptionDecision | '')} className="w-full border border-slate-200 rounded-lg px-3 py-2 bg-white">
+            <option value="">续费决策</option>
+            <option value="keep">保留</option>
+            <option value="review">续费前复核</option>
+            <option value="cancel">倾向取消</option>
+          </select>
+        </div>
+        <label className="block text-sm font-medium">
+          提前复核天数
+          <input type="number" value={reviewBeforeDays} onChange={(e) => setReviewBeforeDays(e.target.value)} placeholder="如 30" className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2" />
+        </label>
+        <textarea value={usageNote} onChange={(e) => setUsageNote(e.target.value)} rows={2} placeholder="使用价值记录：谁在用、最近是否还需要、保留理由" className="w-full border border-slate-200 rounded-lg px-3 py-2" />
         <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="备注" className="w-full border border-slate-200 rounded-lg px-3 py-2" />
       </div>
 

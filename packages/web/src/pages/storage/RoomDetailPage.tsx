@@ -16,6 +16,7 @@ import { getStorage, useStore } from '../../stores/useStore';
 import LooseListDialog from '../modals/LooseListDialog';
 import RoomDialog from '../modals/RoomDialog';
 import { PinIcon } from '../../components/PinIcon';
+import { Glyph } from '../../components/Glyph';
 
 export default function RoomDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -24,6 +25,7 @@ export default function RoomDetailPage() {
   const photos = useStore((s) => s.photos);
   const cabinets = useStore((s) => s.cabinets);
   const items = useStore((s) => s.items);
+  const scanSessions = useStore((s) => s.scanSessions);
   const put = useStore((s) => s.put);
   const del = useStore((s) => s.del);
   const reloadAll = useStore((s) => s.reloadAll);
@@ -36,6 +38,14 @@ export default function RoomDetailPage() {
     () => photos.filter((p) => p.roomId === id).sort((a, b) => b.createdAt - a.createdAt),
     [photos, id]
   );
+  const myReviewSessions = useMemo(
+    () =>
+      scanSessions
+        .filter((session) => session.roomId === id && session.status === 'reviewing')
+        .sort((a, b) => b.createdAt - a.createdAt),
+    [scanSessions, id]
+  );
+  const latestReviewSession = myReviewSessions[0];
   const looseCabinet = cabinets.find((c) => c.roomId === id && c.type === 'loose');
   const looseItems = items
     .filter((item) => item.cabinetId === looseCabinet?.id || (item.roomId === id && item.status === 'pending'))
@@ -95,7 +105,7 @@ export default function RoomDetailPage() {
               编辑
             </button>
             <button onClick={() => cameraRef.current?.click()} disabled={busy} className="px-3 py-2 bg-brand-500 hover:bg-brand-600 disabled:bg-ink-300 text-white rounded-lg text-sm font-medium">
-              {busy ? '处理中…' : <><PinIcon name="camera" size={22} tile={false} /> 拍照</>}
+              {busy ? '处理中…' : <><Glyph name="camera" size={16} />拍照</>}
             </button>
           </div>
         }
@@ -108,6 +118,22 @@ export default function RoomDetailPage() {
           拍几张平面照，AI 会生成柜子和物品候选；进入审核台确认后再写入档案。
         </div>
 
+        {latestReviewSession && (
+          <button
+            onClick={() => navigate(`/scan/${latestReviewSession.id}`)}
+            className="mb-4 w-full rounded-2xl bg-white border border-brand-100 shadow-soft p-4 text-left hover:shadow-md transition flex items-center gap-3"
+          >
+            <PinIcon name="spark" size={46} />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-ink-900">还有 {myReviewSessions.length} 个 AI 审核未确认</div>
+              <div className="text-xs text-ink-500 mt-0.5">
+                最新一次包含 {latestReviewSession.candidates.filter((candidate) => candidate.reviewStatus !== 'rejected').length} 个候选
+              </div>
+            </div>
+            <span className="text-sm text-brand-700">继续审核</span>
+          </button>
+        )}
+
         {myPhotos.length === 0 ? (
           <EmptyState
             icon="photo"
@@ -115,39 +141,62 @@ export default function RoomDetailPage() {
             description="拍一张照片，AI 会自动识别柜子和物品"
             action={
               <div className="flex justify-center gap-2">
-                <button onClick={() => cameraRef.current?.click()} className="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg"><PinIcon name="camera" size={22} tile={false} /> 拍照</button>
-                <button onClick={() => pickerRef.current?.click()} className="px-5 py-2.5 bg-white border border-slate-200 rounded-lg"><PinIcon name="gallery" size={22} tile={false} /> 选图</button>
+                <button onClick={() => cameraRef.current?.click()} className="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg"><Glyph name="camera" size={16} />拍照</button>
+                <button onClick={() => pickerRef.current?.click()} className="px-5 py-2.5 bg-white border border-slate-200 rounded-lg"><Glyph name="image" size={16} />选图</button>
               </div>
             }
           />
         ) : (
           <>
             <div className="mb-4 rounded-2xl border-2 border-dashed border-slate-200 bg-white p-4 flex items-center justify-center gap-3">
-              <button onClick={() => cameraRef.current?.click()} disabled={busy} className="px-4 py-2 rounded-lg bg-brand-500 text-white disabled:bg-ink-300"><PinIcon name="camera" size={22} tile={false} /> 加照片</button>
-              <button onClick={() => pickerRef.current?.click()} disabled={busy} className="px-4 py-2 rounded-lg bg-slate-100 disabled:bg-ink-100"><PinIcon name="gallery" size={22} tile={false} /> 从相册选</button>
+              <button onClick={() => cameraRef.current?.click()} disabled={busy} className="px-4 py-2 rounded-lg bg-brand-500 text-white disabled:bg-ink-300"><Glyph name="camera" size={16} />加照片</button>
+              <button onClick={() => pickerRef.current?.click()} disabled={busy} className="px-4 py-2 rounded-lg bg-slate-100 disabled:bg-ink-100"><Glyph name="image" size={16} />从相册选</button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {myPhotos.map((photo) => {
                 const cabinetCount = cabinets.filter((cabinet) => cabinet.photoId === photo.id).length;
                 const itemCount = items.filter((item) => item.sourcePhotoId === photo.id).length;
+                const reviewSession = myReviewSessions.find((session) => session.photoId === photo.id);
+                const reviewCandidateCount =
+                  reviewSession?.candidates.filter((candidate) => candidate.reviewStatus !== 'rejected').length || 0;
                 return (
                   <div key={photo.id} className="relative bg-white rounded-2xl shadow-soft overflow-hidden group cursor-pointer" onClick={() => navigate(`/photo/${photo.id}`)}>
                     <BlobImage blob={photo.blob} className="w-full aspect-[4/3] object-cover" />
+                    {reviewSession && (
+                      <span className="absolute top-2 left-2 px-2 py-1 rounded-full bg-brand-500 text-white text-xs inline-flex items-center gap-1">
+                        <PinIcon name="spark" size={18} tile={false} />审核中
+                      </span>
+                    )}
                     <span className="absolute top-2 right-2 px-2 py-1 rounded-full bg-black/55 text-white text-xs inline-flex items-center gap-1"><PinIcon name="cabinet" size={18} tile={false} />{cabinetCount}</span>
                     <div className="p-3 flex items-center justify-between">
                       <div>
                         <div className="enamel-meta text-sm text-ink-700"><span><PinIcon name="cabinet" size={18} tile={false} />{cabinetCount} 柜</span><span><PinIcon name="box" size={18} tile={false} />{itemCount} 物</span></div>
-                        <div className="text-xs text-ink-500 mt-0.5">{new Date(photo.createdAt).toLocaleDateString()}</div>
+                        <div className="text-xs text-ink-500 mt-0.5">
+                          {reviewSession ? `${reviewCandidateCount} 个候选待确认` : new Date(photo.createdAt).toLocaleDateString()}
+                        </div>
                       </div>
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          removePhoto(photo);
-                        }}
-                        className="text-ink-400 hover:text-red-500 px-2 py-1"
-                      >
-                        <PinIcon name="trash" size={22} tile={false} />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        {reviewSession && (
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              navigate(`/scan/${reviewSession.id}`);
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-brand-50 text-brand-700 text-xs"
+                          >
+                            继续
+                          </button>
+                        )}
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removePhoto(photo);
+                          }}
+                          className="text-ink-400 hover:text-red-500 px-2 py-1"
+                        >
+                          <PinIcon name="trash" size={22} tile={false} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );

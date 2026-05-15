@@ -159,31 +159,71 @@ export function computeSubscriptionEvents(subs: Subscription[]): ReminderEvent[]
   const events: ReminderEvent[] = [];
   const now = Date.now();
   for (const sub of subs) {
-    if (sub.status === 'cancelled' || sub.status === 'paused') continue;
-    if (!sub.nextDueAt) continue;
-    const dueMs = new Date(sub.nextDueAt + 'T23:59:59').getTime();
-    if (isNaN(dueMs)) continue;
-    const remain = Math.ceil((dueMs - now) / (24 * 3600 * 1000));
-    if (remain > 14) continue;
-    let level: ReminderLevel = 'info';
-    if (remain < 0) level = 'critical';
-    else if (remain <= 3) level = 'critical';
-    else if (remain <= 7) level = 'warn';
-    const amount = sub.amount ? `¥${(+sub.amount).toFixed(2)}` : '';
-    events.push({
-      kind: 'subscription',
-      level,
-      subId: sub.id,
-      title: sub.name,
-      subtitle:
-        remain < 0
-          ? `已逾期 ${-remain} 天${amount ? ` · ${amount}` : ''}`
-          : remain === 0
-          ? `今天扣款${amount ? ` · ${amount}` : ''}`
-          : `${remain} 天后扣款${amount ? ` · ${amount}` : ''}`,
-      daysLeft: remain,
-      icon: REMINDER_ICONS.subscription,
-    });
+    if (sub.status === 'cancelled') {
+      if (sub.endAt && !sub.cancellationCheckedAt) {
+        const endMs = new Date(sub.endAt + 'T23:59:59').getTime();
+        if (!isNaN(endMs)) {
+          const remain = Math.ceil((endMs - now) / (24 * 3600 * 1000));
+          if (remain <= 14) {
+            events.push({
+              kind: 'subscription',
+              level: 'info',
+              subId: sub.id,
+              title: sub.name,
+              subtitle: remain < 0 ? `已取消 ${-remain} 天 · 建议确认未继续扣款` : `${remain} 天后回查退订结果`,
+              daysLeft: remain,
+              icon: REMINDER_ICONS.subscription,
+            });
+          }
+        }
+      }
+      continue;
+    }
+    if (sub.status === 'paused') continue;
+
+    if (sub.nextDueAt) {
+      const dueMs = new Date(sub.nextDueAt + 'T23:59:59').getTime();
+      if (!isNaN(dueMs)) {
+        const remain = Math.ceil((dueMs - now) / (24 * 3600 * 1000));
+        if (remain <= 14) {
+          let level: ReminderLevel = 'info';
+          if (remain < 0) level = 'critical';
+          else if (remain <= 3) level = 'critical';
+          else if (remain <= 7) level = 'warn';
+          const amount = sub.amount ? `¥${(+sub.amount).toFixed(2)}` : '';
+          events.push({
+            kind: 'subscription',
+            level,
+            subId: sub.id,
+            title: sub.name,
+            subtitle:
+              remain < 0
+                ? `已逾期 ${-remain} 天${amount ? ` · ${amount}` : ''}`
+                : remain === 0
+                ? `今天扣款${amount ? ` · ${amount}` : ''}`
+                : `${remain} 天后扣款${amount ? ` · ${amount}` : ''}`,
+            daysLeft: remain,
+            icon: REMINDER_ICONS.subscription,
+          });
+        }
+
+        const reviewBeforeDays = sub.reviewBeforeDays ?? (sub.cycle === 'yearly' ? 30 : null);
+        if (reviewBeforeDays != null) {
+          const reviewRemain = Math.ceil((dueMs - reviewBeforeDays * 24 * 3600 * 1000 - now) / (24 * 3600 * 1000));
+          if (reviewRemain <= 7 && sub.decision !== 'keep') {
+            events.push({
+              kind: 'subscription',
+              level: reviewRemain < 0 ? 'warn' : 'info',
+              subId: sub.id,
+              title: sub.name,
+              subtitle: `续费前复核 · ${sub.decision === 'cancel' ? '倾向取消' : '待决策'}`,
+              daysLeft: reviewRemain,
+              icon: REMINDER_ICONS.subscription,
+            });
+          }
+        }
+      }
+    }
   }
   return events;
 }
