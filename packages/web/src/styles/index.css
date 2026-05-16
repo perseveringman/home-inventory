@@ -133,6 +133,54 @@ h3 { font-size: 1.08rem; line-height: 1.25; }
 .scenebar > div {
   padding: 8px max(14px, env(safe-area-inset-left, 0)) 6px;
 }
+.scenebar-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.scene-list {
+  display: flex;
+  min-width: 0;
+}
+.home-switcher {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-family: var(--sans);
+}
+.home-switcher select {
+  min-width: 0;
+  max-width: 220px;
+  height: 30px;
+  border: 1px solid rgba(120, 102, 82, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.72);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  padding: 0 28px 0 9px;
+  outline: none;
+}
+.home-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--moss);
+  box-shadow: 0 0 0 3px rgba(107, 122, 89, 0.12);
+}
+.home-kind {
+  height: 20px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: rgba(181, 107, 74, 0.11);
+  color: var(--clay);
+  font-size: 10px;
+  font-weight: 700;
+}
 .scene-btn {
   position: relative;
   flex: 1;
@@ -193,6 +241,18 @@ h3 { font-size: 1.08rem; line-height: 1.25; }
 }
 @media (min-width: 768px) {
   .scenebar > div { padding: 14px 28px; }
+  .scenebar-inner {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .scene-list {
+    justify-content: center;
+    flex: 1;
+  }
+  .home-switcher {
+    flex: 0 0 190px;
+  }
   .scene-btn {
     flex: 0 0 auto;
     flex-direction: row;

@@ -1,5 +1,5 @@
 import type { Cabinet, Item, Room, Season } from '../models';
-import { GLOBAL_ROOM_ID, PRESET_TAGS } from '../models';
+import { DEFAULT_HOME_ID, GLOBAL_ROOM_ID, PRESET_TAGS } from '../models';
 import { getConfig } from '../storage/indexeddb';
 import type { Storage } from '../storage/types';
 import { fileToBase64 } from '../utils/image';
@@ -321,7 +321,7 @@ function scoreRoom(room: Room, tags: string[], item: Item): number {
 }
 
 function scoreCabinet(cabinet: Cabinet, tags: string[], item: Item, allItems: Item[]): number {
-  let score = scoreRoom({ id: cabinet.roomId, name: '', icon: '', createdAt: 0 }, tags, item);
+  let score = scoreRoom({ id: cabinet.roomId, homeId: cabinet.homeId || DEFAULT_HOME_ID, name: '', icon: '', createdAt: 0 }, tags, item);
   const cabinetText = cabinet.name.toLowerCase();
   for (const tag of tags) {
     if (cabinetText.includes(tag.toLowerCase())) score += 4;

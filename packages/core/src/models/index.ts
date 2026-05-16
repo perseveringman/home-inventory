@@ -7,6 +7,24 @@
 
 export type ID = string;
 
+export const DEFAULT_HOME_ID = 'home-default';
+export const DEMO_HOME_ID = 'home-demo';
+
+export type HomeKind = 'user' | 'demo';
+
+export interface Home {
+  id: ID;
+  name: string;
+  kind: HomeKind;
+  icon?: string;
+  createdAt: number;
+  lastOpenedAt?: number;
+}
+
+export interface HomeScopedRecord {
+  homeId: ID;
+}
+
 export interface Rect {
   x: number; // 0~1 归一化
   y: number;
@@ -16,14 +34,14 @@ export interface Rect {
 
 /* ========== 房间 / 照片 / 柜子 / 物品 ========== */
 
-export interface Room {
+export interface Room extends HomeScopedRecord {
   id: ID;
   name: string;
   icon: string;
   createdAt: number;
 }
 
-export interface Photo {
+export interface Photo extends HomeScopedRecord {
   id: ID;
   roomId: ID;
   blob: Blob;
@@ -57,7 +75,7 @@ export interface ScanCandidate {
 
 export type ScanSessionStatus = 'reviewing' | 'applied' | 'discarded';
 
-export interface ScanSession {
+export interface ScanSession extends HomeScopedRecord {
   id: ID;
   photoId: ID;
   roomId: ID;
@@ -70,10 +88,9 @@ export interface ScanSession {
 export type LabelTargetType = 'room' | 'cabinet' | 'item';
 export type LabelStatus = 'unclaimed' | 'linked' | 'revoked';
 
-export interface Label {
+export interface Label extends HomeScopedRecord {
   id: ID;
   code: string;
-  homeId?: string;
   labelNo?: string;
   targetType?: LabelTargetType;
   targetId?: ID;
@@ -84,7 +101,7 @@ export interface Label {
 
 export type ActionLogSource = 'user' | 'ai' | 'system';
 
-export interface ActionLog {
+export interface ActionLog extends HomeScopedRecord {
   id: ID;
   source: ActionLogSource;
   type: string;
@@ -98,7 +115,7 @@ export interface ActionLog {
 
 export type CabinetType = 'normal' | 'loose' | 'loose-global';
 
-export interface Cabinet {
+export interface Cabinet extends HomeScopedRecord {
   id: ID;
   photoId: ID | null; // loose / loose-global 时为 null
   roomId: ID; // loose-global 时为 '__global__'
@@ -115,7 +132,7 @@ export type ItemSource = 'manual' | 'ai';
 
 export type Season = 'spring' | 'summer' | 'autumn' | 'winter' | '';
 
-export interface Item {
+export interface Item extends HomeScopedRecord {
   id: ID;
   cabinetId: ID;
   roomId: ID | '__global__';
@@ -198,7 +215,7 @@ export interface CancellationStep {
   done?: boolean;
 }
 
-export interface Subscription {
+export interface Subscription extends HomeScopedRecord {
   id: ID;
   name: string;
   icon?: string;

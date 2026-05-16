@@ -136,6 +136,7 @@ export default function PhotoEditor({ photo, cabinets }: Props) {
       if (name) {
         const cabinet: Cabinet = {
           id: uid(),
+          homeId: photo.homeId,
           photoId: photo.id,
           roomId: photo.roomId,
           name,

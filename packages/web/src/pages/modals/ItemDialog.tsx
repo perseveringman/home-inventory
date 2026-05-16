@@ -105,6 +105,7 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
     try {
       const draftItem: Item = {
         id: item?.id || '__draft_item__',
+        homeId: item?.homeId || getStorage().homeId!,
         cabinetId,
         roomId,
         name: name.trim() || item?.name || '',
@@ -269,6 +270,7 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
     const image = blob || item?.image || (await generateItemThumb(trimmedName, item?.aiEmoji || 'box'));
     const next: Item = {
       id: item?.id || uid(),
+      homeId: item?.homeId || cabinet.homeId,
       cabinetId: cabinet.id,
       roomId: cabinet.roomId,
       name: trimmedName,

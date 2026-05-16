@@ -1,4 +1,5 @@
-import type { Cabinet, Item, Photo, Room } from '../models';
+import type { ActionLog, Cabinet, Item, Label, Photo, Room, ScanSession, Subscription } from '../models';
+import { DEMO_HOME_ID, GLOBAL_ROOM_ID } from '../models';
 import type { Storage } from '../storage/types';
 import { generateItemThumb } from '../utils/image';
 
@@ -160,31 +161,43 @@ async function makeDemoPhoto(room: DemoRoom): Promise<{ blob: Blob; width: numbe
 }
 
 export async function loadDemoData(storage: Storage, replace = false): Promise<void> {
+  const homeId = storage.homeId || DEMO_HOME_ID;
   const existing = await storage.all('rooms');
   if (existing.length && !replace) {
     throw new Error('已有数据，若要重新加载示例请先清空或选择覆盖');
   }
   if (replace) await storage.clearAll();
   const baseTime = Date.now() - 86400000 * 30;
+  const firstIds = {
+    roomId: '',
+    photoId: '',
+    cabinetId: '',
+    itemId: '',
+  };
   for (const [roomIndex, demo] of DEMO_ROOMS.entries()) {
     const room: Room = {
       id: demo.id,
+      homeId,
       name: demo.name,
       icon: demo.icon,
       createdAt: baseTime + roomIndex * 86400000,
     };
+    if (!firstIds.roomId) firstIds.roomId = room.id;
     await storage.add('rooms', room);
     const photoData = await makeDemoPhoto(demo);
     const photo: Photo = {
       id: `demo-photo-${demo.id}`,
+      homeId,
       roomId: room.id,
       ...photoData,
       createdAt: room.createdAt + 1000,
     };
+    if (!firstIds.photoId) firstIds.photoId = photo.id;
     await storage.add('photos', photo);
     for (const cab of demo.cabinets) {
       const cabinet: Cabinet = {
         id: cab.id,
+        homeId,
         photoId: photo.id,
         roomId: room.id,
         name: cab.name,
@@ -192,10 +205,12 @@ export async function loadDemoData(storage: Storage, replace = false): Promise<v
         type: 'normal',
         createdAt: room.createdAt + 2000,
       };
+      if (!firstIds.cabinetId) firstIds.cabinetId = cabinet.id;
       await storage.add('cabinets', cabinet);
       for (const data of cab.items) {
         const item: Item = {
           id: `demo-item-${cab.id}-${data.name}`.replace(/\s+/g, ''),
+          homeId,
           cabinetId: cabinet.id,
           roomId: room.id,
           name: data.name,
@@ -208,8 +223,183 @@ export async function loadDemoData(storage: Storage, replace = false): Promise<v
           createdAt: room.createdAt + 3000,
           lastTouchedAt: room.createdAt + 3000,
         };
+        if (!firstIds.itemId) firstIds.itemId = item.id;
         await storage.add('items', item);
       }
     }
   }
+
+  const globalCabinet: Cabinet = {
+    id: 'demo-cab-global-loose',
+    homeId,
+    photoId: null,
+    roomId: GLOBAL_ROOM_ID,
+    name: '全屋自由区',
+    rect: { x: 0, y: 0, w: 0, h: 0 },
+    type: 'loose-global',
+    createdAt: baseTime + 86400000 * 4,
+  };
+  await storage.add('cabinets', globalCabinet);
+  const pendingItems: Item[] = [
+    {
+      id: 'demo-item-pending-vitamin',
+      homeId,
+      cabinetId: globalCabinet.id,
+      roomId: GLOBAL_ROOM_ID,
+      name: '维生素 D',
+      qty: 1,
+      note: '待确认放药箱还是床头柜',
+      tags: ['药品'],
+      image: await generateItemThumb('维生素 D', '💊'),
+      expiry: new Date(Date.now() + 86400000 * 12).toISOString().slice(0, 10),
+      status: 'pending',
+      source: 'ai',
+      aiEmoji: '💊',
+      confidence: 0.82,
+      aiReason: '识别为瓶装保健品，建议先进入待处理',
+      reviewStatus: 'pending',
+      createdAt: baseTime + 86400000 * 5,
+    },
+    {
+      id: 'demo-item-pending-cable',
+      homeId,
+      cabinetId: globalCabinet.id,
+      roomId: GLOBAL_ROOM_ID,
+      name: 'HDMI 线',
+      qty: 2,
+      note: '可能属于电视柜',
+      tags: ['数码'],
+      image: await generateItemThumb('HDMI 线', '🔌'),
+      status: 'pending',
+      source: 'manual',
+      aiEmoji: '🔌',
+      createdAt: baseTime + 86400000 * 5 + 1000,
+    },
+  ];
+  for (const item of pendingItems) await storage.add('items', item);
+
+  const subscriptions: Subscription[] = [
+    {
+      id: 'demo-sub-cloud',
+      homeId,
+      name: 'iCloud+',
+      icon: '☁️',
+      category: 'software',
+      amount: 21,
+      currency: 'CNY',
+      cycle: 'monthly',
+      nextDueAt: new Date(Date.now() + 86400000 * 8).toISOString().slice(0, 10),
+      autoRenew: true,
+      paymentMethod: 'Apple Pay',
+      status: 'active',
+      decision: 'keep',
+      source: 'manual',
+      createdAt: baseTime + 86400000 * 6,
+    },
+    {
+      id: 'demo-sub-video',
+      homeId,
+      name: '视频会员',
+      icon: '▶️',
+      category: 'membership',
+      amount: 29,
+      currency: 'CNY',
+      cycle: 'monthly',
+      nextDueAt: new Date(Date.now() + 86400000 * 2).toISOString().slice(0, 10),
+      autoRenew: true,
+      paymentMethod: '微信',
+      status: 'active',
+      decision: 'review',
+      reviewBeforeDays: 3,
+      source: 'ai_text',
+      evidenceText: '微信自动续费提醒：视频会员 29 元/月',
+      createdAt: baseTime + 86400000 * 7,
+    },
+  ];
+  for (const sub of subscriptions) await storage.add('subscriptions', sub);
+
+  const labels: Label[] = [
+    {
+      id: 'demo-label-room',
+      homeId,
+      code: 'hi_demo_room',
+      labelNo: 'D-001',
+      targetType: 'room',
+      targetId: firstIds.roomId,
+      status: 'linked',
+      createdAt: baseTime + 86400000 * 8,
+      updatedAt: baseTime + 86400000 * 8,
+    },
+    {
+      id: 'demo-label-item',
+      homeId,
+      code: 'hi_demo_item',
+      labelNo: 'D-002',
+      targetType: 'item',
+      targetId: firstIds.itemId,
+      status: 'linked',
+      createdAt: baseTime + 86400000 * 8 + 1000,
+      updatedAt: baseTime + 86400000 * 8 + 1000,
+    },
+  ];
+  for (const label of labels) await storage.add('labels', label);
+
+  const scanSession: ScanSession = {
+    id: 'demo-scan-review',
+    homeId,
+    photoId: firstIds.photoId,
+    roomId: firstIds.roomId,
+    status: 'reviewing',
+    candidates: [
+      {
+        id: 'demo-candidate-cabinet',
+        kind: 'cabinet',
+        name: '展示柜',
+        rect: { x: 0.12, y: 0.18, w: 0.34, h: 0.42 },
+        confidence: 0.86,
+        aiReason: '疑似独立储物区域',
+        reviewStatus: 'pending',
+        createdAt: baseTime + 86400000 * 9,
+      },
+      {
+        id: 'demo-candidate-item',
+        kind: 'item',
+        name: '备用电池',
+        rect: { x: 0.24, y: 0.34, w: 0.12, h: 0.12 },
+        emoji: '🔋',
+        confidence: 0.74,
+        suggestedCabinetCandidateId: 'demo-candidate-cabinet',
+        placementConfidence: 0.8,
+        placementReason: '物品位于展示柜框内',
+        reviewStatus: 'pending',
+        createdAt: baseTime + 86400000 * 9 + 1000,
+      },
+    ],
+    createdAt: baseTime + 86400000 * 9,
+  };
+  await storage.add('scanSessions', scanSession);
+
+  const logs: ActionLog[] = [
+    {
+      id: 'demo-log-seeded',
+      homeId,
+      source: 'system',
+      type: 'demo_seeded',
+      summary: '生成示例 home 数据',
+      targetType: 'home',
+      targetId: homeId,
+      createdAt: Date.now(),
+    },
+    {
+      id: 'demo-log-scan',
+      homeId,
+      source: 'ai',
+      type: 'scan_session_created',
+      summary: '生成扫描审核：1 个柜子 · 1 件物品',
+      targetType: 'scanSession',
+      targetId: scanSession.id,
+      createdAt: Date.now() + 1,
+    },
+  ];
+  for (const log of logs) await storage.add('actionLogs', log);
 }

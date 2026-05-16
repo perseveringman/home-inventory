@@ -1,4 +1,5 @@
 import {
+  DEFAULT_HOME_ID,
   SUB_CATEGORIES,
   SUB_CYCLES,
   type CancellationDifficulty,
@@ -218,6 +219,7 @@ function buildSubscription(draft: any): Subscription | null {
   if (!patch.name) return null;
   return {
     id: uid(),
+    homeId: patch.homeId || DEFAULT_HOME_ID,
     name: patch.name,
     icon: patch.icon,
     category: patch.category || 'other',

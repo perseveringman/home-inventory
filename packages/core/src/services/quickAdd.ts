@@ -1,5 +1,5 @@
 import type { Cabinet, Item, Photo } from '../models';
-import { GLOBAL_ROOM_ID } from '../models';
+import { DEFAULT_HOME_ID, GLOBAL_ROOM_ID } from '../models';
 import type { Storage } from '../storage/types';
 import { cropItemFromPhoto, generateItemThumb } from '../utils/image';
 import { uid } from '../utils/id';
@@ -62,6 +62,7 @@ export async function addQuickItems(
     const image = await generateItemThumb(line.name);
     const item: Item = {
       id: uid(),
+      homeId: targetCabinet.homeId || storage.homeId || DEFAULT_HOME_ID,
       cabinetId: targetCabinet.id,
       roomId: targetCabinet.roomId,
       name: line.name,
@@ -99,6 +100,7 @@ export async function scanLooseItemsFromPhoto(
     const image = crop || (await generateItemThumb(box.name, box.emoji || 'box'));
     const item: Item = {
       id: uid(),
+      homeId: targetCabinet.homeId || storage.homeId || DEFAULT_HOME_ID,
       cabinetId: targetCabinet.id,
       roomId: targetCabinet.roomId,
       name: box.name,

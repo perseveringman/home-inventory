@@ -1,4 +1,5 @@
 import type { Cabinet, Item, Photo, ScanCandidate, ScanSession } from '../models';
+import { DEFAULT_HOME_ID } from '../models';
 import type { Storage } from '../storage/types';
 import { cropItemFromPhoto, generateItemThumb } from '../utils/image';
 import { uid } from '../utils/id';
@@ -149,6 +150,7 @@ export async function createScanSessionFromDetection(
   ]);
   const session: ScanSession = {
     id: uid(),
+    homeId: photo.homeId || storage.homeId || DEFAULT_HOME_ID,
     photoId: photo.id,
     roomId: photo.roomId,
     status: 'reviewing',
@@ -219,6 +221,7 @@ export async function applyScanSession(
     if (candidate.kind === 'cabinet') {
       const cabinet: Cabinet = {
         id: uid(),
+        homeId: photo.homeId || storage.homeId || DEFAULT_HOME_ID,
         photoId: photo.id,
         roomId: photo.roomId,
         name: candidate.name,
@@ -252,6 +255,7 @@ export async function applyScanSession(
         .join('；');
       const item: Item = {
         id: uid(),
+        homeId: photo.homeId || storage.homeId || DEFAULT_HOME_ID,
         cabinetId: cabinet.id,
         roomId: cabinet.roomId,
         name: candidate.name,

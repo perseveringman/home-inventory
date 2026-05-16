@@ -66,7 +66,7 @@ export default function RoomDetailPage() {
     setBusy(true);
     try {
       const { blob, width, height } = await compressImage(file);
-      const photo: Photo = { id: uid(), roomId: id, blob, width, height, createdAt: Date.now() };
+      const photo: Photo = { id: uid(), homeId: room.homeId, roomId: id, blob, width, height, createdAt: Date.now() };
       await put('photos', photo);
       const storage = getStorage();
       toast('已上传，AI 识别中…', 2500);

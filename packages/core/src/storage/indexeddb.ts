@@ -1,11 +1,14 @@
 /**
  * IndexedDB 实现。用户选 B（新 DB 重头走），所以用独立的 DB 名。
  */
-import type { Storage, StoreName, StoreSchema } from './types';
+import { DEFAULT_HOME_ID } from '../models';
+import type { Storage, StoreInputSchema, StoreName, StoreSchema } from './types';
+import { isHomeBoundStore } from './types';
 
 const DB_NAME = 'home-inventory-v2';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORES: StoreName[] = [
+  'homes',
   'rooms',
   'photos',
   'cabinets',
@@ -17,36 +20,78 @@ const STORES: StoreName[] = [
   'config',
 ];
 
+function createStoreIndexes(name: StoreName, store: IDBObjectStore) {
+  if (isHomeBoundStore(name) && !store.indexNames.contains('homeId')) {
+    store.createIndex('homeId', 'homeId', { unique: false });
+  }
+  if ((name === 'photos' || name === 'cabinets' || name === 'items') && !store.indexNames.contains('roomId')) {
+    store.createIndex('roomId', 'roomId', { unique: false });
+  }
+  if (name === 'cabinets' && !store.indexNames.contains('photoId')) {
+    store.createIndex('photoId', 'photoId', { unique: false });
+  }
+  if (name === 'items') {
+    if (!store.indexNames.contains('cabinetId')) {
+      store.createIndex('cabinetId', 'cabinetId', { unique: false });
+    }
+  }
+  if (name === 'scanSessions') {
+    if (!store.indexNames.contains('roomId')) {
+      store.createIndex('roomId', 'roomId', { unique: false });
+    }
+    if (!store.indexNames.contains('photoId')) {
+      store.createIndex('photoId', 'photoId', { unique: false });
+    }
+    if (!store.indexNames.contains('status')) {
+      store.createIndex('status', 'status', { unique: false });
+    }
+  }
+  if (name === 'labels') {
+    if (store.indexNames.contains('code')) {
+      store.deleteIndex('code');
+    }
+    store.createIndex('code', 'code', { unique: false });
+    if (!store.indexNames.contains('targetId')) {
+      store.createIndex('targetId', 'targetId', { unique: false });
+    }
+    if (!store.indexNames.contains('status')) {
+      store.createIndex('status', 'status', { unique: false });
+    }
+  }
+  if (name === 'actionLogs' && !store.indexNames.contains('createdAt')) {
+    store.createIndex('createdAt', 'createdAt', { unique: false });
+  }
+}
+
+function backfillHomeId(store: IDBObjectStore) {
+  const req = store.openCursor();
+  req.onsuccess = () => {
+    const cursor = req.result;
+    if (!cursor) return;
+    const value = cursor.value;
+    if (value && !value.homeId) {
+      cursor.update({ ...value, homeId: DEFAULT_HOME_ID });
+    }
+    cursor.continue();
+  };
+}
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (e) => {
       const db = (e.target as IDBOpenDBRequest).result;
+      const tx = (e.target as IDBOpenDBRequest).transaction!;
       STORES.forEach((name) => {
+        let store: IDBObjectStore;
         if (!db.objectStoreNames.contains(name)) {
-          const store = db.createObjectStore(name, { keyPath: 'id' });
-          if (name === 'photos' || name === 'cabinets' || name === 'items') {
-            store.createIndex('roomId', 'roomId', { unique: false });
-          }
-          if (name === 'cabinets') {
-            store.createIndex('photoId', 'photoId', { unique: false });
-          }
-          if (name === 'items') {
-            store.createIndex('cabinetId', 'cabinetId', { unique: false });
-          }
-          if (name === 'scanSessions') {
-            store.createIndex('roomId', 'roomId', { unique: false });
-            store.createIndex('photoId', 'photoId', { unique: false });
-            store.createIndex('status', 'status', { unique: false });
-          }
-          if (name === 'labels') {
-            store.createIndex('code', 'code', { unique: true });
-            store.createIndex('targetId', 'targetId', { unique: false });
-            store.createIndex('status', 'status', { unique: false });
-          }
-          if (name === 'actionLogs') {
-            store.createIndex('createdAt', 'createdAt', { unique: false });
-          }
+          store = db.createObjectStore(name, { keyPath: 'id' });
+        } else {
+          store = tx.objectStore(name);
+        }
+        createStoreIndexes(name, store);
+        if (isHomeBoundStore(name)) {
+          backfillHomeId(store);
         }
       });
     };
@@ -76,6 +121,16 @@ async function run<T>(
   });
 }
 
+function withFallbackHomeId<K extends StoreName>(
+  store: K,
+  obj: StoreInputSchema[K]
+): StoreSchema[K] {
+  if (isHomeBoundStore(store)) {
+    return { ...(obj as any), homeId: (obj as any).homeId || DEFAULT_HOME_ID };
+  }
+  return obj as StoreSchema[K];
+}
+
 export class IndexedDBStorage implements Storage {
   async all<K extends StoreName>(store: K): Promise<StoreSchema[K][]> {
     return run(store, 'readonly', (s) => s.getAll() as IDBRequest<StoreSchema[K][]>);
@@ -100,12 +155,12 @@ export class IndexedDBStorage implements Storage {
     );
   }
 
-  async put<K extends StoreName>(store: K, obj: StoreSchema[K]): Promise<void> {
-    await run(store, 'readwrite', (s) => s.put(obj as any));
+  async put<K extends StoreName>(store: K, obj: StoreInputSchema[K]): Promise<void> {
+    await run(store, 'readwrite', (s) => s.put(withFallbackHomeId(store, obj) as any));
   }
 
-  async add<K extends StoreName>(store: K, obj: StoreSchema[K]): Promise<void> {
-    await run(store, 'readwrite', (s) => s.put(obj as any));
+  async add<K extends StoreName>(store: K, obj: StoreInputSchema[K]): Promise<void> {
+    await run(store, 'readwrite', (s) => s.put(withFallbackHomeId(store, obj) as any));
   }
 
   async del(store: StoreName, id: string): Promise<void> {

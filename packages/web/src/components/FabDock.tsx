@@ -51,6 +51,7 @@ export function FabDock() {
         existingPhoto ||
         {
           id: uid(),
+          homeId: storage.homeId!,
           roomId: targetRoomId() || GLOBAL_ROOM_ID,
           blob: compressed.blob,
           width: compressed.width,

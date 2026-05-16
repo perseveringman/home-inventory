@@ -1,5 +1,6 @@
 import type { StoreName, StoreSchema, Storage } from '../src/storage/types';
-import type { Subscription } from '../src/models';
+import { DEFAULT_HOME_ID, type Subscription } from '../src/models';
+import { HomeScopedStorage } from '../src/storage/scoped';
 import { computeSubscriptionEvents } from '../src/services/reminder';
 import {
   buildSubscriptionInsights,
@@ -36,8 +37,14 @@ class MemoryStorage implements Storage {
     return (this.data.get(store) || new Map()).get(id);
   }
 
-  async byIndex<K extends StoreName>(): Promise<StoreSchema[K][]> {
-    return [];
+  async byIndex<K extends StoreName>(
+    store: K,
+    index: string,
+    value: string
+  ): Promise<StoreSchema[K][]> {
+    return Array.from((this.data.get(store) || new Map()).values()).filter(
+      (row) => row?.[index] === value
+    );
   }
 
   async put<K extends StoreName>(store: K, obj: StoreSchema[K]): Promise<void> {
@@ -60,6 +67,7 @@ class MemoryStorage implements Storage {
 
 const baseSub = (patch: Partial<Subscription>): Subscription => ({
   id: patch.id || `sub-${Math.random()}`,
+  homeId: patch.homeId || DEFAULT_HOME_ID,
   name: patch.name || 'Test',
   category: patch.category || 'software',
   amount: patch.amount ?? 10,
@@ -136,6 +144,39 @@ async function run() {
   assert(findDuplicateSubscriptions(subs).length === 1, 'duplicate finder should group similar subscriptions');
   assert(buildSubscriptionInsights(subs).some((insight) => insight.id === 'price-hike'), 'insights should include price hike');
   assert(computeSubscriptionEvents(subs).some((event) => event.subId === 'c' && event.subtitle.includes('续费前复核')), 'events should include renewal review reminder');
+
+  const raw = new MemoryStorage();
+  await raw.put('homes', { id: 'home-a', name: 'A', kind: 'user', createdAt: 1 });
+  await raw.put('homes', { id: 'home-b', name: 'B', kind: 'user', createdAt: 1 });
+  await raw.put('rooms', { id: 'room-a', homeId: 'home-a', name: 'A room', icon: '🏠', createdAt: 1 });
+  await raw.put('rooms', { id: 'room-b', homeId: 'home-b', name: 'B room', icon: '🏠', createdAt: 1 });
+  await raw.put('cabinets', {
+    id: 'global-a',
+    homeId: 'home-a',
+    roomId: '__global__',
+    photoId: null,
+    name: 'A global',
+    rect: { x: 0, y: 0, w: 0, h: 0 },
+    type: 'loose-global',
+    createdAt: 1,
+  });
+  await raw.put('cabinets', {
+    id: 'global-b',
+    homeId: 'home-b',
+    roomId: '__global__',
+    photoId: null,
+    name: 'B global',
+    rect: { x: 0, y: 0, w: 0, h: 0 },
+    type: 'loose-global',
+    createdAt: 1,
+  });
+  const scopedA = new HomeScopedStorage(raw, () => 'home-a');
+  assert((await scopedA.all('rooms')).map((room) => room.id).join(',') === 'room-a', 'scoped all should isolate rooms');
+  assert(!(await scopedA.get('rooms', 'room-b')), 'scoped get should hide another home');
+  assert((await scopedA.byIndex('cabinets', 'roomId', '__global__')).map((cabinet) => cabinet.id).join(',') === 'global-a', 'scoped byIndex should isolate global loose cabinets');
+  await scopedA.clearAll();
+  assert(!(await raw.get('rooms', 'room-a')), 'scoped clear should remove current home');
+  assert(!!(await raw.get('rooms', 'room-b')), 'scoped clear should keep other homes');
 }
 
 run()

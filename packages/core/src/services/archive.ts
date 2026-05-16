@@ -2,6 +2,7 @@ import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
 import type {
   ActionLog,
   Cabinet,
+  Home,
   Item,
   Label,
   Photo,
@@ -9,11 +10,14 @@ import type {
   ScanSession,
   Subscription,
 } from '../models';
+import { DEFAULT_HOME_ID, GLOBAL_ROOM_ID } from '../models';
 import type { Storage } from '../storage/types';
+import { uid } from '../utils/id';
 
 interface ExportPayload {
-  version: 2;
+  version: 2 | 3;
   exportedAt: string;
+  home?: Home;
   rooms: Room[];
   photos: Array<Omit<Photo, 'blob'> & { blob: string }>;
   cabinets: Cabinet[];
@@ -56,8 +60,9 @@ function slug(raw: string, fallback: string) {
 }
 
 export async function buildFileTree(storage: Storage): Promise<ArchiveFile[]> {
-  const [rooms, photos, cabinets, items, subscriptions, scanSessions, labels, actionLogs] =
+  const [homes, rooms, photos, cabinets, items, subscriptions, scanSessions, labels, actionLogs] =
     await Promise.all([
+    storage.all('homes'),
     storage.all('rooms'),
     storage.all('photos'),
     storage.all('cabinets'),
@@ -67,13 +72,21 @@ export async function buildFileTree(storage: Storage): Promise<ArchiveFile[]> {
     storage.all('labels'),
     storage.all('actionLogs'),
   ]);
+  const currentHome = homes.find((home) => home.id === storage.homeId);
   const files: ArchiveFile[] = [
     {
       path: 'inventory.json',
       content: JSON.stringify(
         {
-          version: '2.0',
+          version: '3.0',
           generated_at: new Date().toISOString(),
+          home: currentHome
+            ? {
+                id: currentHome.id,
+                name: currentHome.name,
+                kind: currentHome.kind,
+              }
+            : undefined,
           stats: {
             rooms: rooms.length,
             photos: photos.length,
@@ -96,8 +109,9 @@ export async function buildFileTree(storage: Storage): Promise<ArchiveFile[]> {
     },
   ];
   const payload: ExportPayload = {
-    version: 2,
+    version: 3,
     exportedAt: new Date().toISOString(),
+    home: currentHome,
     rooms,
     photos: [],
     cabinets,
@@ -160,12 +174,117 @@ export async function parseFileTree(files: ArchiveFile[]): Promise<ExportPayload
     throw new Error('未找到 data/home-inventory-v2.json，无法导入');
   }
   const payload = JSON.parse(dataFile.content) as ExportPayload;
-  if (payload.version !== 2) throw new Error('不支持的导入文件版本');
+  if (payload.version !== 2 && payload.version !== 3) throw new Error('不支持的导入文件版本');
   return payload;
 }
 
+function remapPayloadForCurrentHome(payload: ExportPayload, homeId: string): ExportPayload {
+  const roomIds = new Map<string, string>();
+  const photoIds = new Map<string, string>();
+  const cabinetIds = new Map<string, string>();
+  const itemIds = new Map<string, string>();
+  const subIds = new Map<string, string>();
+  const sessionIds = new Map<string, string>();
+  const labelIds = new Map<string, string>();
+  const logIds = new Map<string, string>();
+
+  const mapId = (map: Map<string, string>, id?: string | null): string | null => {
+    if (!id) return null;
+    if (!map.has(id)) map.set(id, uid());
+    return map.get(id)!;
+  };
+  const mapTargetId = (targetType: string | undefined, targetId: string | undefined) => {
+    if (!targetId) return undefined;
+    if (targetType === 'room') return mapId(roomIds, targetId)!;
+    if (targetType === 'cabinet') return mapId(cabinetIds, targetId)!;
+    if (targetType === 'item') return mapId(itemIds, targetId)!;
+    if (targetType === 'subscription') return mapId(subIds, targetId)!;
+    if (targetType === 'scanSession') return mapId(sessionIds, targetId)!;
+    if (targetType === 'label') return mapId(labelIds, targetId)!;
+    return targetId;
+  };
+
+  const rooms = payload.rooms.map((room) => ({
+    ...room,
+    id: mapId(roomIds, room.id)!,
+    homeId,
+  }));
+  const photos = payload.photos.map((photo) => ({
+    ...photo,
+    id: mapId(photoIds, photo.id)!,
+    homeId,
+    roomId: mapId(roomIds, photo.roomId)!,
+  }));
+  const cabinets = payload.cabinets.map((cabinet) => ({
+    ...cabinet,
+    id: mapId(cabinetIds, cabinet.id)!,
+    homeId,
+    roomId: cabinet.roomId === GLOBAL_ROOM_ID ? cabinet.roomId : mapId(roomIds, cabinet.roomId)!,
+    photoId: mapId(photoIds, cabinet.photoId),
+  }));
+  const items = payload.items.map((item) => ({
+    ...item,
+    id: mapId(itemIds, item.id)!,
+    homeId,
+    cabinetId: mapId(cabinetIds, item.cabinetId)!,
+    roomId: item.roomId === GLOBAL_ROOM_ID ? item.roomId : mapId(roomIds, item.roomId)!,
+    sourcePhotoId: mapId(photoIds, item.sourcePhotoId),
+  }));
+  const subscriptions = payload.subscriptions.map((sub) => ({
+    ...sub,
+    id: mapId(subIds, sub.id)!,
+    homeId,
+  }));
+  const scanSessions = (payload.scanSessions || []).map((session) => {
+    const candidateIds = new Map<string, string>();
+    const mapCandidateId = (id?: string) => {
+      if (!id) return undefined;
+      if (!candidateIds.has(id)) candidateIds.set(id, uid());
+      return candidateIds.get(id)!;
+    };
+    return {
+      ...session,
+      id: mapId(sessionIds, session.id)!,
+      homeId,
+      photoId: mapId(photoIds, session.photoId)!,
+      roomId: mapId(roomIds, session.roomId)!,
+      candidates: session.candidates.map((candidate) => ({
+        ...candidate,
+        id: mapCandidateId(candidate.id)!,
+        suggestedCabinetCandidateId: mapCandidateId(candidate.suggestedCabinetCandidateId),
+      })),
+    };
+  });
+  const labels = (payload.labels || []).map((label) => ({
+    ...label,
+    id: mapId(labelIds, label.id)!,
+    homeId,
+    targetId: mapTargetId(label.targetType, label.targetId),
+  }));
+  const actionLogs = (payload.actionLogs || []).map((log) => ({
+    ...log,
+    id: mapId(logIds, log.id)!,
+    homeId,
+    targetId: mapTargetId(log.targetType, log.targetId),
+  }));
+
+  return {
+    ...payload,
+    home: payload.home ? { ...payload.home, id: homeId } : undefined,
+    rooms,
+    photos,
+    cabinets,
+    items,
+    subscriptions,
+    scanSessions,
+    labels,
+    actionLogs,
+  };
+}
+
 export async function importZip(storage: Storage, zipBlob: Blob, replace = true): Promise<void> {
-  const payload = await parseFileTree(await zipBlobToFiles(zipBlob));
+  const targetHomeId = storage.homeId || DEFAULT_HOME_ID;
+  const payload = remapPayloadForCurrentHome(await parseFileTree(await zipBlobToFiles(zipBlob)), targetHomeId);
   if (replace) await storage.clearAll();
   for (const room of payload.rooms) await storage.put('rooms', room);
   for (const photo of payload.photos) {

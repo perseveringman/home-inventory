@@ -1,4 +1,5 @@
 import type { Label, LabelTargetType } from '../models';
+import { DEFAULT_HOME_ID } from '../models';
 import type { Storage } from '../storage/types';
 import { uid } from '../utils/id';
 import { logAction } from './actionLog';
@@ -42,6 +43,7 @@ export async function createLabel(
 ): Promise<Label> {
   const label: Label = {
     id: uid(),
+    homeId: storage.homeId || DEFAULT_HOME_ID,
     code: makeLabelCode(),
     targetType: input.targetType,
     targetId: input.targetId,

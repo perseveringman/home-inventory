@@ -3,7 +3,7 @@
  */
 import type { Storage } from '../storage/types';
 import type { Cabinet as CabinetModel } from '../models';
-import { GLOBAL_ROOM_ID } from '../models';
+import { DEFAULT_HOME_ID, GLOBAL_ROOM_ID } from '../models';
 import { uid } from '../utils/id';
 
 export function isLooseCabinet(c?: CabinetModel | null): boolean {
@@ -19,6 +19,7 @@ export async function ensureLooseCabinet(
   if (loose) return loose;
   loose = {
     id: uid(),
+    homeId: storage.homeId || DEFAULT_HOME_ID,
     photoId: null,
     roomId,
     name: '自由物品收纳处',
@@ -38,6 +39,7 @@ export async function ensureGlobalLooseCabinet(
   if (loose) return loose;
   loose = {
     id: uid(),
+    homeId: storage.homeId || DEFAULT_HOME_ID,
     photoId: null,
     roomId: GLOBAL_ROOM_ID,
     name: '全屋自由区',

@@ -20,6 +20,7 @@ interface Props {
 
 export default function SubscriptionDialog({ sub, onClose }: Props) {
   const put = useStore((s) => s.put);
+  const currentHomeId = useStore((s) => s.currentHomeId);
   const [name, setName] = useState(sub?.name || '');
   const [icon, setIcon] = useState(sub?.icon || '');
   const [category, setCategory] = useState<SubCategory>(sub?.category || 'software');
@@ -58,6 +59,7 @@ export default function SubscriptionDialog({ sub, onClose }: Props) {
         : sub?.priceHistory || [{ amount: nextAmount, date: startedAt || nextDueAt || today, note: '初始记录' }];
     return {
       id: sub?.id || uid(),
+      homeId: sub?.homeId || currentHomeId,
       name: trimmed,
       icon: icon.trim() || undefined,
       category,

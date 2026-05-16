@@ -1,11 +1,11 @@
 import { useRef, useState } from 'react';
 import {
+  DEMO_HOME_ID,
   bindSyncDirectory,
   doSyncNow,
   exportZip,
   importZip,
   isFileSystemAccessSupported,
-  loadDemoData,
   unbindSyncDirectory,
 } from '@home-inventory/core';
 import { Header } from '../components/Header';
@@ -22,6 +22,12 @@ export default function SettingsPage() {
   const subs = useStore((s) => s.subscriptions);
   const labels = useStore((s) => s.labels);
   const actionLogs = useStore((s) => s.actionLogs);
+  const homes = useStore((s) => s.homes);
+  const currentHome = useStore((s) => s.currentHome);
+  const currentHomeId = useStore((s) => s.currentHomeId);
+  const switchHome = useStore((s) => s.switchHome);
+  const createHome = useStore((s) => s.createHome);
+  const resetDemoHome = useStore((s) => s.resetDemoHome);
   const importRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [lastSync, setLastSync] = useState('');
@@ -29,11 +35,11 @@ export default function SettingsPage() {
   const storageMB = ((photos.reduce((sum, photo) => sum + (photo.blob?.size || 0), 0) + items.reduce((sum, item) => sum + (item.image?.size || 0), 0)) / 1024 / 1024).toFixed(2);
 
   const clearAll = async () => {
-    if (!confirm('确定要清空所有房间、柜子、物品、订阅？此操作不可撤销')) return;
-    if (!confirm('再次确认：真的要清空吗？')) return;
+    if (!confirm(`确定要清空当前 home「${currentHome?.name || '未命名'}」的所有房间、柜子、物品、订阅？此操作不可撤销`)) return;
+    if (!confirm('再次确认：只会清空当前 home，真的要继续吗？')) return;
     await getStorage().clearAll();
     await reloadAll();
-    toast('已清空');
+    toast('当前 home 已清空');
   };
 
   const downloadZip = async () => {
@@ -43,7 +49,8 @@ export default function SettingsPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `home-inventory-${new Date().toISOString().slice(0, 10)}.zip`;
+      const homeName = (currentHome?.name || 'home').replace(/[\\/:*?"<>|]+/g, '-');
+      a.download = `home-inventory-${homeName}-${new Date().toISOString().slice(0, 10)}.zip`;
       a.click();
       URL.revokeObjectURL(url);
       toast('已导出 ZIP');
@@ -58,7 +65,7 @@ export default function SettingsPage() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    if (!confirm('导入会覆盖当前数据，继续？')) return;
+    if (!confirm(`导入会覆盖当前 home「${currentHome?.name || '未命名'}」的数据，继续？`)) return;
     setBusy(true);
     try {
       await importZip(getStorage(), file, true);
@@ -71,18 +78,29 @@ export default function SettingsPage() {
     }
   };
 
-  const loadDemo = async () => {
-    if (rooms.length && !confirm('当前已有数据，加载示例会覆盖。继续？')) return;
+  const openOrResetDemo = async () => {
     setBusy(true);
     try {
-      await loadDemoData(getStorage(), true);
-      await reloadAll();
-      toast('示例数据加载完成');
+      if (currentHomeId === DEMO_HOME_ID) {
+        if (!confirm('重置示例 home？当前示例里的改动会被恢复为初始示例数据。')) return;
+        await resetDemoHome();
+        toast('示例 home 已重置');
+      } else {
+        await switchHome(DEMO_HOME_ID);
+        toast('已切到示例 home');
+      }
     } catch (err: any) {
-      toast('加载失败：' + (err?.message || 'unknown'), 3000);
+      toast('操作失败：' + (err?.message || 'unknown'), 3000);
     } finally {
       setBusy(false);
     }
+  };
+
+  const addHome = async () => {
+    const name = prompt('给新 home 起个名字', '我的家')?.trim();
+    if (!name) return;
+    await createHome(name);
+    toast('已创建并切换到新 home');
   };
 
   const bindSync = async () => {
@@ -117,7 +135,12 @@ export default function SettingsPage() {
       <Header title="设置" />
       <div className="px-4 md:px-6 py-4 space-y-6">
         <section className="bg-white rounded-2xl shadow-soft p-5">
-          <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="overview" size={30} />数据概览</h2>
+          <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="overview" size={30} />当前 home</h2>
+          <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+            <span className="px-3 py-1.5 rounded-lg bg-slate-50 font-medium">{currentHome?.name || '未命名'}</span>
+            {currentHome?.kind === 'demo' && <span className="px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 text-xs font-semibold">示例</span>}
+            <span className="text-xs text-ink-500">共 {homes.length} 个 home</span>
+          </div>
           <div className="grid grid-cols-3 md:grid-cols-6 gap-3 text-sm">
             {[
               ['房间', rooms.length],
@@ -137,12 +160,13 @@ export default function SettingsPage() {
         </section>
 
         <section className="bg-white rounded-2xl shadow-soft p-5">
-          <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="box" size={30} />导入导出 / 示例数据</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="box" size={30} />Home / 导入导出</h2>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
             <button onClick={downloadZip} disabled={busy} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">导出 ZIP</button>
             <button onClick={() => importRef.current?.click()} disabled={busy} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">导入 ZIP</button>
-            <button onClick={loadDemo} disabled={busy} className="py-2.5 rounded-lg bg-brand-500 text-white disabled:opacity-60">加载示例</button>
-            <button onClick={clearAll} disabled={busy} className="py-2.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60">清空数据</button>
+            <button onClick={openOrResetDemo} disabled={busy} className="py-2.5 rounded-lg bg-brand-500 text-white disabled:opacity-60">{currentHomeId === DEMO_HOME_ID ? '重置示例' : '打开示例'}</button>
+            <button onClick={addHome} disabled={busy} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">新建 home</button>
+            <button onClick={clearAll} disabled={busy} className="py-2.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60">清空当前</button>
           </div>
           <input ref={importRef} type="file" accept=".zip,application/zip" hidden onChange={onImport} />
         </section>

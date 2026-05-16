@@ -17,6 +17,7 @@ interface Props {
 
 export default function RoomDialog({ room, onDone, onClose }: Props) {
   const put = useStore((s) => s.put);
+  const currentHomeId = useStore((s) => s.currentHomeId);
   const [name, setName] = useState(room?.name || '');
   const [icon, setIcon] = useState(room?.icon || ROOM_ICONS[0]);
 
@@ -33,7 +34,7 @@ export default function RoomDialog({ room, onDone, onClose }: Props) {
     }
     const obj: Room = room
       ? { ...room, name: n, icon }
-      : { id: uid(), name: n, icon, createdAt: Date.now() };
+      : { id: uid(), homeId: currentHomeId, name: n, icon, createdAt: Date.now() };
     await put('rooms', obj);
     toast(room ? '已更新' : '已添加');
     onDone();

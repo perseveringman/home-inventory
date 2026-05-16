@@ -70,6 +70,7 @@ export default function CabinetDialog({ cabinet, onClose }: Props) {
     const image = blob || (await generateItemThumb(n, 'box'));
     const item: Item = {
       id: uid(),
+      homeId: cabinet.homeId,
       cabinetId: cabinet.id,
       roomId: cabinet.roomId,
       name: n,
