@@ -4,6 +4,7 @@ const {
   createHomeId,
   handleCloudError,
   hashSecret,
+  normalizeSnapshotHomeId,
   parseAccessToken,
   publicMeta,
   randomInviteCode,
@@ -26,17 +27,22 @@ module.exports = async function handler(req, res) {
 
   try {
     const body = await readJson(req);
-    const homeId = cleanHomeId(body.homeId) || createHomeId();
+    const requestedHomeId = cleanHomeId(body.homeId);
     const homeName = String(body.homeName || '共享 home').trim().slice(0, 80) || '共享 home';
     const snapshot = body.snapshot;
     validateSnapshot(snapshot);
+    if (snapshot.home?.kind === 'demo' || snapshot.home?.id === 'home-demo' || requestedHomeId === 'home-demo') {
+      sendJson(res, 400, { error: '示例 home 不能生成邀请码' });
+      return;
+    }
 
-    const existing = await readMeta(homeId);
+    const existing = requestedHomeId ? await readMeta(requestedHomeId) : undefined;
     const providedToken = parseAccessToken(req, body);
     if (existing && !canAccess(existing, providedToken)) {
       sendJson(res, 403, { error: '这个 home 已经在云端存在，需要本机保存的访问令牌才能更新或重置邀请码' });
       return;
     }
+    const homeId = existing ? requestedHomeId : createHomeId();
 
     const now = new Date().toISOString();
     const inviteCode = randomInviteCode();
@@ -46,13 +52,7 @@ module.exports = async function handler(req, res) {
       : [hashSecret(accessToken)];
 
     await writeSnapshot(homeId, {
-      ...snapshot,
-      home: snapshot.home ? { ...snapshot.home, id: homeId, name: homeName } : {
-        id: homeId,
-        name: homeName,
-        kind: 'user',
-        createdAt: Date.now(),
-      },
+      ...normalizeSnapshotHomeId(snapshot, homeId, homeName),
       exportedAt: now,
     });
 

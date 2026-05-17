@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import {
   DEFAULT_HOME_ID,
   DEMO_HOME_ID,
+  HOME_BOUND_STORES,
   HomeScopedStorage,
   IndexedDBStorage,
   getConfig,
@@ -56,6 +57,7 @@ interface StoreState {
   switchHome: (homeId: string) => Promise<void>;
   createHome: (name?: string) => Promise<Home>;
   adoptHome: (home: Home) => Promise<Home>;
+  migrateCurrentHome: (nextHome: Home) => Promise<Home>;
   resetDemoHome: () => Promise<void>;
 }
 
@@ -128,6 +130,43 @@ export const useStore = create<StoreState>((set, get) => ({
     return next;
   },
 
+  migrateCurrentHome: async (home) => {
+    const oldHomeId = activeHomeId;
+    if (oldHomeId === DEMO_HOME_ID) throw new Error('示例 home 不能迁移为共享 home');
+    const next: Home = {
+      ...home,
+      id: home.id,
+      kind: 'user',
+      createdAt: home.createdAt || Date.now(),
+      lastOpenedAt: Date.now(),
+    };
+    if (!next.id || next.id === oldHomeId) {
+      await rawStorage.put('homes', next);
+      await get().switchHome(next.id || oldHomeId);
+      return next;
+    }
+
+    const existing = await rawStorage.get('homes', next.id);
+    if (existing && existing.id !== oldHomeId) {
+      throw new Error('本机已经存在这个共享 home');
+    }
+
+    for (const storeName of HOME_BOUND_STORES) {
+      const rows = await rawStorage.all(storeName);
+      await Promise.all(
+        rows
+          .filter((row) => row.homeId === oldHomeId)
+          .map((row) => rawStorage.put(storeName, { ...(row as any), homeId: next.id } as any))
+      );
+    }
+    await rawStorage.del('homes', oldHomeId);
+    await rawStorage.put('homes', next);
+    activeHomeId = next.id;
+    await setConfig(rawStorage, CURRENT_HOME_KEY, next.id);
+    await reloadAllCollections(set);
+    return next;
+  },
+
   resetDemoHome: async () => {
     const demo = (await rawStorage.get('homes', DEMO_HOME_ID)) || createDemoHome();
     await rawStorage.put('homes', { ...demo, lastOpenedAt: Date.now() });
@@ -181,7 +220,8 @@ async function ensureHomeSetup(): Promise<void> {
   if (!homeIds.has(DEMO_HOME_ID)) {
     await rawStorage.put('homes', createDemoHome());
   }
-  if (!homeIds.has(DEFAULT_HOME_ID)) {
+  const hasUserHome = homes.some((home) => home.kind === 'user' && home.id !== DEMO_HOME_ID);
+  if (!homeIds.has(DEFAULT_HOME_ID) && !hasUserHome) {
     await rawStorage.put('homes', createDefaultHome(hasData));
   }
 

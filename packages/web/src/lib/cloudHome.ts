@@ -1,4 +1,5 @@
 import {
+  DEMO_HOME_ID,
   exportPayload,
   importPayload,
   type ExportPayload,
@@ -7,6 +8,7 @@ import {
 } from '@home-inventory/core';
 
 const TOKEN_PREFIX = 'home-inventory:cloud-token:';
+const CLOUD_HOME_ID_RE = /^hm_[a-zA-Z0-9_-]+$/;
 
 export interface CloudStatus {
   blobConfigured: boolean;
@@ -42,6 +44,14 @@ export function saveCloudToken(homeId: string, token: string): void {
   if (token) localStorage.setItem(tokenKey(homeId), token);
 }
 
+export function isCloudHomeId(homeId: string): boolean {
+  return CLOUD_HOME_ID_RE.test(homeId);
+}
+
+export function clearCloudToken(homeId: string): void {
+  localStorage.removeItem(tokenKey(homeId));
+}
+
 async function cloudFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -66,21 +76,32 @@ export async function buildCloudSnapshot(storage: Storage): Promise<ExportPayloa
 }
 
 export async function shareCloudHome(storage: Storage, home: Home): Promise<CloudShareResult> {
+  if (home.kind === 'demo' || home.id === DEMO_HOME_ID) {
+    throw new Error('示例 home 不能生成邀请码，请先新建自己的 home');
+  }
   const snapshot = await buildCloudSnapshot(storage);
+  const shouldReuseCloudId = isCloudHomeId(home.id);
   const result = await cloudFetch<CloudShareResult>('/api/cloud/share', {
     method: 'POST',
     body: JSON.stringify({
-      homeId: home.id,
+      homeId: shouldReuseCloudId ? home.id : undefined,
       homeName: home.name,
-      accessToken: getCloudToken(home.id),
+      accessToken: shouldReuseCloudId ? getCloudToken(home.id) : undefined,
       snapshot,
     }),
   });
   if (result.accessToken) saveCloudToken(result.homeId, result.accessToken);
+  if (result.homeId !== home.id) clearCloudToken(home.id);
   return result;
 }
 
 export async function pushCloudSnapshot(storage: Storage, home: Home): Promise<CloudShareResult> {
+  if (home.kind === 'demo' || home.id === DEMO_HOME_ID) {
+    throw new Error('示例 home 不能上传云端');
+  }
+  if (!isCloudHomeId(home.id)) {
+    throw new Error('请先生成邀请码，把本地 home 升级为共享 home');
+  }
   const accessToken = getCloudToken(home.id);
   if (!accessToken) throw new Error('本机还没有这个 home 的云端访问令牌，请先生成或加入邀请码');
   const snapshot = await buildCloudSnapshot(storage);

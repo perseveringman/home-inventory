@@ -96,6 +96,8 @@ AI_APP_TITLE=Home Inventory
 
 当前多人协作走轻量云端快照：用户在设置页生成邀请码，家人输入 `Home ID + 邀请码` 后加入同一个 home。第一版只同步房间、柜子、物品、订阅、标签、操作日志等结构化数据；照片仍使用 ZIP/文件夹备份。
 
+首次生成邀请码时，本地 home 会升级为服务端生成的全局 `hm_...` Home ID，并把当前 home 下的本地记录迁移到这个新 ID；示例 home 不能分享。
+
 后端使用 Vercel Functions + Vercel Blob，需要在 Vercel Project Storage 创建 Private Blob store，并配置：
 
 ```bash

@@ -19,6 +19,7 @@ import {
   pullCloudSnapshot,
   pushCloudSnapshot,
   shareCloudHome,
+  isCloudHomeId,
   type CloudStatus,
 } from '../lib/cloudHome';
 
@@ -37,16 +38,19 @@ export default function SettingsPage() {
   const switchHome = useStore((s) => s.switchHome);
   const createHome = useStore((s) => s.createHome);
   const adoptHome = useStore((s) => s.adoptHome);
+  const migrateCurrentHome = useStore((s) => s.migrateCurrentHome);
   const resetDemoHome = useStore((s) => s.resetDemoHome);
   const importRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [lastSync, setLastSync] = useState('');
   const [cloudStatus, setCloudStatus] = useState<CloudStatus | null>(null);
   const [inviteCode, setInviteCode] = useState('');
-  const [cloudHomeId, setCloudHomeId] = useState('');
 
   const storageMB = ((photos.reduce((sum, photo) => sum + (photo.blob?.size || 0), 0) + items.reduce((sum, item) => sum + (item.image?.size || 0), 0)) / 1024 / 1024).toFixed(2);
   const cloudReady = cloudStatus?.blobConfigured === true;
+  const isDemoHome = currentHome?.kind === 'demo' || currentHomeId === DEMO_HOME_ID;
+  const canUseCloudHome = cloudReady && !isDemoHome;
+  const canSyncCloudHome = canUseCloudHome && isCloudHomeId(currentHomeId);
 
   useEffect(() => {
     fetchCloudStatus()
@@ -155,9 +159,16 @@ export default function SettingsPage() {
     setBusy(true);
     try {
       const result = await shareCloudHome(getStorage(), currentHome);
+      if (result.homeId !== currentHome.id) {
+        await migrateCurrentHome({
+          ...currentHome,
+          id: result.homeId,
+          name: result.homeName || currentHome.name,
+          kind: 'user',
+        });
+      }
       setInviteCode(result.inviteCode || '');
-      setCloudHomeId(result.homeId);
-      toast('邀请码已生成，结构化数据已上传');
+      toast(result.homeId === currentHome.id ? '邀请码已生成，结构化数据已上传' : '已生成全局 Home ID 并上传云端');
     } catch (err: any) {
       toast('云端分享失败：' + (err?.message || 'unknown'), 4000);
     } finally {
@@ -270,7 +281,7 @@ export default function SettingsPage() {
           <div className="mb-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
             <div className="rounded-lg bg-slate-50 p-3">
               <div className="text-xs text-ink-500">Home ID</div>
-              <div className="font-mono text-[13px] break-all">{cloudHomeId || currentHomeId}</div>
+              <div className="font-mono text-[13px] break-all">{currentHomeId}</div>
             </div>
             <div className="rounded-lg bg-slate-50 p-3">
               <div className="text-xs text-ink-500">邀请码</div>
@@ -278,15 +289,17 @@ export default function SettingsPage() {
             </div>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <button onClick={shareCloud} disabled={busy || !cloudReady} className="py-2.5 rounded-lg bg-brand-500 text-white disabled:opacity-60">生成邀请码</button>
-            <button onClick={pushCloud} disabled={busy || !cloudReady} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">上传云端</button>
-            <button onClick={pullCloud} disabled={busy || !cloudReady} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">拉取云端</button>
+            <button onClick={shareCloud} disabled={busy || !canUseCloudHome} className="py-2.5 rounded-lg bg-brand-500 text-white disabled:opacity-60">生成邀请码</button>
+            <button onClick={pushCloud} disabled={busy || !canSyncCloudHome} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">上传云端</button>
+            <button onClick={pullCloud} disabled={busy || !canSyncCloudHome} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">拉取云端</button>
             <button onClick={joinCloud} disabled={busy || !cloudReady} className="py-2.5 rounded-lg border border-slate-200 disabled:opacity-60">加入 home</button>
           </div>
           <div className="mt-2 text-xs text-ink-500">
             {cloudStatus === null
               ? '检测云端配置中…'
-              : cloudReady
+              : isDemoHome
+                ? '示例 home 不能分享；请新建自己的 home 后再生成邀请码。'
+                : cloudReady
                 ? '云端快照同步结构化数据；照片继续使用 ZIP/文件夹备份。'
                 : '未配置 BLOB_READ_WRITE_TOKEN。'}
           </div>

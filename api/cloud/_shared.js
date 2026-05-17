@@ -3,6 +3,7 @@ const { env, readJson, sendJson } = require('../ai/_shared');
 
 const ACCESS = env('HOME_CLOUD_BLOB_ACCESS') === 'public' ? 'public' : 'private';
 const SNAPSHOT_SOFT_LIMIT = 3.5 * 1024 * 1024;
+const CLOUD_HOME_ID_RE = /^hm_[a-zA-Z0-9_-]+$/;
 
 async function blobSdk() {
   return import('@vercel/blob');
@@ -49,6 +50,10 @@ function createHomeId() {
   return `hm_${crypto.randomBytes(9).toString('base64url')}`;
 }
 
+function isCloudHomeId(homeId) {
+  return CLOUD_HOME_ID_RE.test(String(homeId || ''));
+}
+
 function homePath(homeId, file) {
   return `homes/${homeId}/${file}`;
 }
@@ -83,6 +88,30 @@ function publicMeta(meta) {
     updatedAt: meta.updatedAt,
     snapshotUpdatedAt: meta.snapshotUpdatedAt,
     schemaVersion: meta.schemaVersion || 3,
+  };
+}
+
+function normalizeSnapshotHomeId(snapshot, homeId, homeName) {
+  const normalizeRows = (rows) =>
+    Array.isArray(rows) ? rows.map((row) => ({ ...row, homeId })) : [];
+  return {
+    ...snapshot,
+    home: snapshot.home
+      ? { ...snapshot.home, id: homeId, name: homeName || snapshot.home.name, kind: 'user' }
+      : {
+          id: homeId,
+          name: homeName || '共享 home',
+          kind: 'user',
+          createdAt: Date.now(),
+        },
+    rooms: normalizeRows(snapshot.rooms),
+    photos: normalizeRows(snapshot.photos),
+    cabinets: normalizeRows(snapshot.cabinets),
+    items: normalizeRows(snapshot.items),
+    subscriptions: normalizeRows(snapshot.subscriptions),
+    scanSessions: normalizeRows(snapshot.scanSessions),
+    labels: normalizeRows(snapshot.labels),
+    actionLogs: normalizeRows(snapshot.actionLogs),
   };
 }
 
@@ -164,6 +193,8 @@ module.exports = {
   handleCloudError,
   hasBlobToken,
   hashSecret,
+  isCloudHomeId,
+  normalizeSnapshotHomeId,
   normalizeInviteCode,
   parseAccessToken,
   publicMeta,

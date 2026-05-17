@@ -2,6 +2,7 @@ const {
   canAccess,
   cleanHomeId,
   handleCloudError,
+  normalizeSnapshotHomeId,
   parseAccessToken,
   publicMeta,
   readJson,
@@ -28,6 +29,10 @@ module.exports = async function handler(req, res) {
       sendJson(res, 400, { error: 'homeId 不合法' });
       return;
     }
+    if (homeId === 'home-demo') {
+      sendJson(res, 400, { error: '示例 home 不能同步云端' });
+      return;
+    }
 
     const meta = await readMeta(homeId);
     if (!meta) {
@@ -52,10 +57,13 @@ module.exports = async function handler(req, res) {
 
     const snapshot = body.snapshot;
     validateSnapshot(snapshot);
+    if (snapshot.home?.kind === 'demo' || snapshot.home?.id === 'home-demo') {
+      sendJson(res, 400, { error: '示例 home 不能同步云端' });
+      return;
+    }
     const now = new Date().toISOString();
     await writeSnapshot(homeId, {
-      ...snapshot,
-      home: snapshot.home ? { ...snapshot.home, id: homeId } : snapshot.home,
+      ...normalizeSnapshotHomeId(snapshot, homeId, body.homeName || snapshot.home?.name || meta.homeName),
       exportedAt: now,
     });
     const nextMeta = {
