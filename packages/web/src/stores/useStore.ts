@@ -55,6 +55,7 @@ interface StoreState {
   reloadAll: () => Promise<void>;
   switchHome: (homeId: string) => Promise<void>;
   createHome: (name?: string) => Promise<Home>;
+  adoptHome: (home: Home) => Promise<Home>;
   resetDemoHome: () => Promise<void>;
 }
 
@@ -113,6 +114,18 @@ export const useStore = create<StoreState>((set, get) => ({
     await rawStorage.put('homes', home);
     await get().switchHome(home.id);
     return home;
+  },
+
+  adoptHome: async (home) => {
+    const next: Home = {
+      ...home,
+      kind: home.kind || 'user',
+      createdAt: home.createdAt || Date.now(),
+      lastOpenedAt: Date.now(),
+    };
+    await rawStorage.put('homes', next);
+    await get().switchHome(next.id);
+    return next;
   },
 
   resetDemoHome: async () => {

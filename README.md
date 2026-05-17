@@ -92,6 +92,19 @@ AI_APP_TITLE=Home Inventory
 
 本地如果要验证后端函数，请使用 Vercel CLI 的 `vercel dev`，单独运行 `pnpm dev` 只会启动 Vite 前端。
 
+## 共享 home / 邀请码
+
+当前多人协作走轻量云端快照：用户在设置页生成邀请码，家人输入 `Home ID + 邀请码` 后加入同一个 home。第一版只同步房间、柜子、物品、订阅、标签、操作日志等结构化数据；照片仍使用 ZIP/文件夹备份。
+
+后端使用 Vercel Functions + Vercel Blob，需要在 Vercel Project Storage 创建 Private Blob store，并配置：
+
+```bash
+BLOB_READ_WRITE_TOKEN=vercel_blob_rw_xxx
+HOME_SHARE_SECRET=replace-with-a-long-random-string
+```
+
+`HOME_SHARE_SECRET` 用来哈希邀请码和访问令牌，修改后会让已生成的邀请码/访问令牌失效。
+
 `SHADOW_BASE_URL` 填 Shadow 站点根域名即可，不要带 `/app`；授权页会自动跳到 `/app/oauth/authorize`，token/userinfo 仍走 `/api/oauth/*`。
 
 在 Shadow 开发者设置里创建 OAuth App 时使用：

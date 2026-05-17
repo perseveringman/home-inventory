@@ -14,6 +14,7 @@ import {
   buildSubscriptionImportPlanFromCsv,
   buildSubscriptionImportPlanFromText,
 } from '../src/services/subscriptionImport';
+import { exportPayload, importPayload } from '../src/services/archive';
 
 declare const process: { exitCode?: number };
 
@@ -177,6 +178,61 @@ async function run() {
   await scopedA.clearAll();
   assert(!(await raw.get('rooms', 'room-a')), 'scoped clear should remove current home');
   assert(!!(await raw.get('rooms', 'room-b')), 'scoped clear should keep other homes');
+
+  const cloudRaw = new MemoryStorage();
+  await cloudRaw.put('homes', { id: 'home-cloud', name: 'Cloud', kind: 'user', createdAt: 1 });
+  await cloudRaw.put('rooms', { id: 'room-1', homeId: 'home-cloud', name: 'Kitchen', icon: '🏠', createdAt: 1 });
+  await cloudRaw.put('photos', {
+    id: 'photo-1',
+    homeId: 'home-cloud',
+    roomId: 'room-1',
+    blob: new Blob(['photo']),
+    width: 100,
+    height: 100,
+    createdAt: 1,
+  });
+  await cloudRaw.put('cabinets', {
+    id: 'cabinet-1',
+    homeId: 'home-cloud',
+    roomId: 'room-1',
+    photoId: 'photo-1',
+    name: 'Pantry',
+    rect: { x: 0, y: 0, w: 1, h: 1 },
+    createdAt: 1,
+  });
+  await cloudRaw.put('items', {
+    id: 'item-1',
+    homeId: 'home-cloud',
+    roomId: 'room-1',
+    cabinetId: 'cabinet-1',
+    name: 'Battery',
+    qty: 2,
+    note: '',
+    tags: [],
+    image: new Blob(['item-image']),
+    sourcePhotoId: 'photo-1',
+    status: 'placed',
+    source: 'manual',
+    createdAt: 1,
+  });
+
+  const cloudScoped = new HomeScopedStorage(cloudRaw, () => 'home-cloud');
+  const cloudPayload = await exportPayload(cloudScoped, { media: 'none' });
+  assert(cloudPayload.photos.length === 0, 'cloud payload should not inline photos');
+  assert(cloudPayload.cabinets[0]!.photoId === null, 'cloud payload should detach cabinet photos');
+  assert(!cloudPayload.items[0]!.image, 'cloud payload should not inline item images');
+  assert(cloudPayload.items[0]!.sourcePhotoId === null, 'cloud payload should detach item source photos');
+
+  await importPayload(cloudScoped, cloudPayload, {
+    replace: true,
+    preserveIds: true,
+    preserveMedia: true,
+  });
+  assert((await cloudScoped.all('photos')).length === 1, 'preserveMedia should keep local photos');
+  assert((await cloudScoped.get('cabinets', 'cabinet-1'))?.photoId === 'photo-1', 'preserveMedia should keep cabinet photoId');
+  const preservedItem = await cloudScoped.get('items', 'item-1');
+  assert(preservedItem?.sourcePhotoId === 'photo-1', 'preserveMedia should keep item sourcePhotoId');
+  assert((preservedItem?.image?.size || 0) > 0, 'preserveMedia should keep item image blob');
 }
 
 run()

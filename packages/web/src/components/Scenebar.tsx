@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useStore } from '../stores/useStore';
+import { getStorage, useStore } from '../stores/useStore';
 import { computeItemEvents, computeSubscriptionEvents } from '@home-inventory/core';
 import { PinIcon } from './PinIcon';
 import { toast } from './Toast';
+import { importCloudSnapshot, joinCloudHome } from '../lib/cloudHome';
 
 interface Scene {
   id: string;
@@ -32,6 +33,8 @@ export function Scenebar() {
   const currentHome = useStore((s) => s.currentHome);
   const switchHome = useStore((s) => s.switchHome);
   const createHome = useStore((s) => s.createHome);
+  const adoptHome = useStore((s) => s.adoptHome);
+  const reloadAll = useStore((s) => s.reloadAll);
   const [switching, setSwitching] = useState(false);
 
   const badge = useMemo(() => {
@@ -74,6 +77,30 @@ export function Scenebar() {
         toast('已创建新 home');
         return;
       }
+      if (value === '__join__') {
+        const homeId = prompt('输入共享 home ID')?.trim();
+        if (!homeId) return;
+        const code = prompt('输入邀请码')?.trim();
+        if (!code) return;
+        const result = await joinCloudHome(homeId, code);
+        const home = result.snapshot.home || {
+          id: result.homeId,
+          name: result.homeName || '共享 home',
+          kind: 'user' as const,
+          createdAt: Date.now(),
+        };
+        await adoptHome({
+          ...home,
+          id: result.homeId,
+          name: result.homeName || home.name,
+          kind: 'user',
+        });
+        await importCloudSnapshot(getStorage(), result.snapshot, false);
+        await reloadAll();
+        navigate('/rooms');
+        toast('已加入共享 home');
+        return;
+      }
       await switchHome(value);
       navigate('/rooms');
       toast('已切换 home');
@@ -101,6 +128,7 @@ export function Scenebar() {
               </option>
             ))}
             <option value="__new__">+ 新建 home</option>
+            <option value="__join__">+ 加入共享 home</option>
           </select>
           {currentHome?.kind === 'demo' && <span className="home-kind">示例</span>}
         </div>

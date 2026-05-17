@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   DEMO_HOME_ID,
   bindSyncDirectory,
@@ -12,6 +12,15 @@ import { Header } from '../components/Header';
 import { toast } from '../components/Toast';
 import { getStorage, useStore } from '../stores/useStore';
 import { PinIcon } from '../components/PinIcon';
+import {
+  fetchCloudStatus,
+  importCloudSnapshot,
+  joinCloudHome,
+  pullCloudSnapshot,
+  pushCloudSnapshot,
+  shareCloudHome,
+  type CloudStatus,
+} from '../lib/cloudHome';
 
 export default function SettingsPage() {
   const reloadAll = useStore((s) => s.reloadAll);
@@ -27,12 +36,23 @@ export default function SettingsPage() {
   const currentHomeId = useStore((s) => s.currentHomeId);
   const switchHome = useStore((s) => s.switchHome);
   const createHome = useStore((s) => s.createHome);
+  const adoptHome = useStore((s) => s.adoptHome);
   const resetDemoHome = useStore((s) => s.resetDemoHome);
   const importRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [lastSync, setLastSync] = useState('');
+  const [cloudStatus, setCloudStatus] = useState<CloudStatus | null>(null);
+  const [inviteCode, setInviteCode] = useState('');
+  const [cloudHomeId, setCloudHomeId] = useState('');
 
   const storageMB = ((photos.reduce((sum, photo) => sum + (photo.blob?.size || 0), 0) + items.reduce((sum, item) => sum + (item.image?.size || 0), 0)) / 1024 / 1024).toFixed(2);
+  const cloudReady = cloudStatus?.blobConfigured === true;
+
+  useEffect(() => {
+    fetchCloudStatus()
+      .then(setCloudStatus)
+      .catch(() => setCloudStatus({ blobConfigured: false, mediaSync: false, snapshotMediaMode: 'none' }));
+  }, []);
 
   const clearAll = async () => {
     if (!confirm(`确定要清空当前 home「${currentHome?.name || '未命名'}」的所有房间、柜子、物品、订阅？此操作不可撤销`)) return;
@@ -130,6 +150,80 @@ export default function SettingsPage() {
     toast('已取消绑定');
   };
 
+  const shareCloud = async () => {
+    if (!currentHome) return;
+    setBusy(true);
+    try {
+      const result = await shareCloudHome(getStorage(), currentHome);
+      setInviteCode(result.inviteCode || '');
+      setCloudHomeId(result.homeId);
+      toast('邀请码已生成，结构化数据已上传');
+    } catch (err: any) {
+      toast('云端分享失败：' + (err?.message || 'unknown'), 4000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pushCloud = async () => {
+    if (!currentHome) return;
+    setBusy(true);
+    try {
+      await pushCloudSnapshot(getStorage(), currentHome);
+      toast('云端快照已更新');
+    } catch (err: any) {
+      toast('上传失败：' + (err?.message || 'unknown'), 4000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pullCloud = async () => {
+    if (!currentHome) return;
+    if (!confirm('拉取会用云端结构化数据覆盖当前 home，照片会保留在本机。继续？')) return;
+    setBusy(true);
+    try {
+      const result = await pullCloudSnapshot(currentHome.id);
+      await importCloudSnapshot(getStorage(), result.snapshot, true);
+      await reloadAll();
+      toast('已拉取云端快照');
+    } catch (err: any) {
+      toast('拉取失败：' + (err?.message || 'unknown'), 4000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const joinCloud = async () => {
+    const homeId = prompt('输入共享 home ID')?.trim();
+    if (!homeId) return;
+    const code = prompt('输入邀请码')?.trim();
+    if (!code) return;
+    setBusy(true);
+    try {
+      const result = await joinCloudHome(homeId, code);
+      const home = result.snapshot.home || {
+        id: result.homeId,
+        name: result.homeName || '共享 home',
+        kind: 'user' as const,
+        createdAt: Date.now(),
+      };
+      await adoptHome({
+        ...home,
+        id: result.homeId,
+        name: result.homeName || home.name,
+        kind: 'user',
+      });
+      await importCloudSnapshot(getStorage(), result.snapshot, false);
+      await reloadAll();
+      toast('已加入共享 home');
+    } catch (err: any) {
+      toast('加入失败：' + (err?.message || 'unknown'), 4000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div>
       <Header title="设置" />
@@ -169,6 +263,33 @@ export default function SettingsPage() {
             <button onClick={clearAll} disabled={busy} className="py-2.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60">清空当前</button>
           </div>
           <input ref={importRef} type="file" accept=".zip,application/zip" hidden onChange={onImport} />
+        </section>
+
+        <section className="bg-white rounded-2xl shadow-soft p-5">
+          <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="tag" size={30} />共享 home</h2>
+          <div className="mb-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+            <div className="rounded-lg bg-slate-50 p-3">
+              <div className="text-xs text-ink-500">Home ID</div>
+              <div className="font-mono text-[13px] break-all">{cloudHomeId || currentHomeId}</div>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-3">
+              <div className="text-xs text-ink-500">邀请码</div>
+              <div className="font-mono text-[13px]">{inviteCode || '未生成'}</div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <button onClick={shareCloud} disabled={busy || !cloudReady} className="py-2.5 rounded-lg bg-brand-500 text-white disabled:opacity-60">生成邀请码</button>
+            <button onClick={pushCloud} disabled={busy || !cloudReady} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">上传云端</button>
+            <button onClick={pullCloud} disabled={busy || !cloudReady} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">拉取云端</button>
+            <button onClick={joinCloud} disabled={busy || !cloudReady} className="py-2.5 rounded-lg border border-slate-200 disabled:opacity-60">加入 home</button>
+          </div>
+          <div className="mt-2 text-xs text-ink-500">
+            {cloudStatus === null
+              ? '检测云端配置中…'
+              : cloudReady
+                ? '云端快照同步结构化数据；照片继续使用 ZIP/文件夹备份。'
+                : '未配置 BLOB_READ_WRITE_TOKEN。'}
+          </div>
         </section>
 
         {isFileSystemAccessSupported() && (

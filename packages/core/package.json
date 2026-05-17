@@ -14,7 +14,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "rm -rf ../../.test-dist/core && tsc -p tsconfig.test.json && node ../../.test-dist/core/test/subscription.test.js"
+    "test": "rm -rf ../../.test-dist/core && tsc -p tsconfig.test.json && NODE_PATH=./node_modules node ../../.test-dist/core/test/subscription.test.js"
   },
   "devDependencies": {
     "typescript": "^5.5.4"
