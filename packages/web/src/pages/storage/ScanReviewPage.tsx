@@ -220,7 +220,7 @@ export default function ScanReviewPage() {
   };
 
   const discard = async () => {
-    if (!confirm('丢弃这次 AI 扫描审核？来源照片仍会保留。')) return;
+    if (!confirm('丢弃这次收集箱识别结果？来源照片仍会保留。')) return;
     await discardScanSession(getStorage(), session.id);
     await reloadAll();
     toast('已丢弃扫描审核');
@@ -230,7 +230,7 @@ export default function ScanReviewPage() {
   return (
     <div>
       <Header
-        title="AI 扫描审核台"
+        title="整理这筐"
         subtitle={`${room?.name || '全屋'} · ${counts.cabinets} 个柜子 · ${counts.items} 件物品`}
         back
         actions={

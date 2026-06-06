@@ -6,12 +6,16 @@ import {
   applyPlacementPlan,
   computeItemEvents,
   computeSubscriptionEvents,
+  renewSubDue,
+  resetRecognitionTask,
   suggestPlacementPlan,
   type PlacementPlan,
   type ReminderEvent,
   type ReminderKind,
+  type Subscription,
 } from '@home-inventory/core';
 import { BlobImage } from '../components/BlobImage';
+import { ItemThumb } from '../components/ItemThumb';
 import { EmptyState } from '../components/EmptyState';
 import { Header } from '../components/Header';
 import { openModal } from '../components/Modal';
@@ -29,14 +33,24 @@ const LEVEL_STYLE: Record<string, string> = {
 
 const KIND_ORDER: ReminderKind[] = ['expiry', 'opened', 'warranty', 'lowstock', 'seasonal', 'dust', 'subscription'];
 
+const TASK_STATUS_LABEL = {
+  queued: '排队中',
+  processing: '识别中',
+  failed: '失败',
+  completed: '已完成',
+} as const;
+
 export default function InboxPage() {
   const navigate = useNavigate();
   const items = useStore((s) => s.items);
   const rooms = useStore((s) => s.rooms);
   const cabinets = useStore((s) => s.cabinets);
   const photos = useStore((s) => s.photos);
+  const recognitionTasks = useStore((s) => s.recognitionTasks);
   const scanSessions = useStore((s) => s.scanSessions);
   const subscriptions = useStore((s) => s.subscriptions);
+  const put = useStore((s) => s.put);
+  const del = useStore((s) => s.del);
   const reloadAll = useStore((s) => s.reloadAll);
   const [plan, setPlan] = useState<PlacementPlan | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
@@ -48,6 +62,14 @@ export default function InboxPage() {
         .filter((session) => session.status === 'reviewing')
         .sort((a, b) => b.createdAt - a.createdAt),
     [scanSessions]
+  );
+
+  const activeRecognitionTasks = useMemo(
+    () =>
+      recognitionTasks
+        .filter((task) => task.status === 'queued' || task.status === 'processing' || task.status === 'failed')
+        .sort((a, b) => a.createdAt - b.createdAt),
+    [recognitionTasks]
   );
 
   const pendingGroups = useMemo(() => {
@@ -67,6 +89,7 @@ export default function InboxPage() {
   }, [items, subscriptions]);
 
   const totalCount =
+    activeRecognitionTasks.length +
     pendingReviewSessions.length +
     pendingGroups.reduce((sum, [, list]) => sum + list.length, 0) +
     eventsByKind.reduce((sum, [, list]) => sum + list.length, 0);
@@ -82,6 +105,21 @@ export default function InboxPage() {
     setPlan(next);
     setSelected(next.suggestions.filter((s) => s.confidence >= 0.5).map((s) => s.itemId));
     toast(next.suggestions.length ? 'AI 分拣方案已生成' : '当前没有待归位物品');
+  };
+
+  const retryTask = async (taskId: string) => {
+    try {
+      await resetRecognitionTask(getStorage(), taskId);
+      await reloadAll();
+      toast('已重新加入识别队列');
+    } catch (err: any) {
+      toast(err?.message || '重试失败', 3000);
+    }
+  };
+
+  const removeTask = async (taskId: string) => {
+    await del('recognitionTasks', taskId);
+    toast('已移除识别任务');
   };
 
   const applyPlan = async () => {
@@ -108,6 +146,17 @@ export default function InboxPage() {
     return `${room ? room.name : '全屋'} › ${cabinet?.name || '自由区'}`;
   };
 
+  const markSubscriptionRenewed = async (sub: Subscription) => {
+    try {
+      const advanced = renewSubDue(sub);
+      advanced.lastPaidAt = new Date().toISOString().slice(0, 10);
+      await put('subscriptions', advanced);
+      toast(`已续期，下次：${advanced.nextDueAt || '未定'}`);
+    } catch (err: any) {
+      toast(err?.message || '更新订阅失败', 3000);
+    }
+  };
+
   const renderEventRow = (event: ReminderEvent) => {
     const item = items.find((x) => x.id === event.itemId);
     const sub = subscriptions.find((x) => x.id === event.subId);
@@ -120,7 +169,11 @@ export default function InboxPage() {
         }}
         className={`border rounded-xl p-3 flex items-center gap-3 cursor-pointer hover:shadow-soft transition ${LEVEL_STYLE[event.level]}`}
       >
-        <BlobImage blob={item?.image || null} emoji={item?.aiEmoji || event.icon} className="w-12 h-12 rounded-lg object-cover bg-white/60" />
+        {item ? (
+          <ItemThumb item={item} className="w-12 h-12 rounded-lg" />
+        ) : (
+          <BlobImage blob={null} emoji={event.icon} className="w-12 h-12 rounded-lg object-cover bg-white/60" />
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-medium truncate">{event.title}</span>
@@ -129,6 +182,18 @@ export default function InboxPage() {
           <div className="text-xs mt-0.5 opacity-80">{event.subtitle}</div>
           {item && <div className="text-[11px] mt-0.5 opacity-70">{locate(item.id)}</div>}
         </div>
+        {sub && sub.status === 'active' && (
+          <button
+            type="button"
+            onClick={(clickEvent) => {
+              clickEvent.stopPropagation();
+              void markSubscriptionRenewed(sub);
+            }}
+            className="shrink-0 px-2.5 py-1.5 rounded-lg bg-white/80 text-[12px] font-semibold text-emerald-700 border border-emerald-100 hover:bg-white"
+          >
+            已续期
+          </button>
+        )}
       </li>
     );
   };
@@ -193,7 +258,7 @@ export default function InboxPage() {
                         )
                       }
                     />
-                    <BlobImage blob={item.image || null} emoji={item.aiEmoji || 'box'} className="w-11 h-11 rounded-lg object-cover bg-white" />
+                    <ItemThumb item={item} className="w-11 h-11 rounded-lg" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium truncate">{item.name}</div>
                       <div className="text-xs text-ink-500 truncate">→ {suggestion.targetLabel}</div>
@@ -212,18 +277,73 @@ export default function InboxPage() {
 
       {totalCount === 0 && (
         <div className="px-4 md:px-6 py-4">
-          <EmptyState icon="spark" title="待处理列表空空如也" description="新上传的照片或提醒事件会出现在这里" />
+          <EmptyState icon="spark" title="待处理列表空空如也" description="拍照入队、收集箱和提醒事件会出现在这里" />
         </div>
+      )}
+
+      {activeRecognitionTasks.length > 0 && (
+        <section className="px-4 md:px-6 py-3">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-semibold inline-flex items-center gap-2">
+              <PinIcon name="spark" size={30} />识别任务队列
+            </h2>
+            <span className="text-xs px-2 py-1 rounded-full bg-brand-50 text-brand-700">
+              {activeRecognitionTasks.length} 个任务
+            </span>
+          </div>
+          <div className="space-y-2">
+            {activeRecognitionTasks.map((task) => {
+              const photo = photos.find((item) => item.id === task.photoId);
+              const failed = task.status === 'failed';
+              return (
+                <div
+                  key={task.id}
+                  className="bg-white rounded-2xl shadow-soft p-3 flex items-center gap-3"
+                >
+                  <BlobImage blob={photo?.blob || null} emoji="spark" className="w-16 h-16 rounded-xl object-cover bg-brand-50" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="font-medium truncate">{roomLabel(task.roomId)}</div>
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full ${failed ? 'bg-red-50 text-red-600' : 'bg-brand-50 text-brand-700'}`}>
+                        {TASK_STATUS_LABEL[task.status]}
+                      </span>
+                    </div>
+                    <div className="text-xs text-ink-500 mt-0.5">
+                      {task.status === 'queued'
+                        ? '已拍照，等待 AI 处理'
+                        : task.status === 'processing'
+                          ? 'AI 正在识别这筐物品'
+                          : task.errorMessage || '识别失败，请重试'}
+                    </div>
+                    <div className="text-[11px] text-ink-400 mt-1">
+                      {new Date(task.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                  {failed && (
+                    <div className="flex flex-col gap-1.5">
+                      <button onClick={() => retryTask(task.id)} className="px-2.5 py-1.5 rounded-lg bg-brand-500 text-white text-xs">
+                        重试
+                      </button>
+                      <button onClick={() => removeTask(task.id)} className="px-2.5 py-1.5 rounded-lg bg-slate-100 text-xs">
+                        移除
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
       )}
 
       {pendingReviewSessions.length > 0 && (
         <section className="px-4 md:px-6 py-3">
           <div className="flex items-center justify-between mb-2">
             <h2 className="font-semibold inline-flex items-center gap-2">
-              <PinIcon name="spark" size={30} />AI 扫描审核
+              <PinIcon name="inbox" size={30} />收集箱
             </h2>
             <span className="text-xs px-2 py-1 rounded-full bg-brand-50 text-brand-700">
-              {pendingReviewSessions.length} 待确认
+              {pendingReviewSessions.length} 批待整理
             </span>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -244,7 +364,7 @@ export default function InboxPage() {
                     <div className="text-xs text-ink-500 mt-0.5">
                       {cabinetCount} 个柜子 · {itemCount} 件物品候选
                     </div>
-                    <div className="text-[11px] text-brand-700 mt-1">继续审核</div>
+                    <div className="text-[11px] text-brand-700 mt-1">整理这筐</div>
                   </div>
                   <span className="text-ink-400">›</span>
                 </button>
@@ -263,7 +383,7 @@ export default function InboxPage() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {list.map((item) => (
               <button key={item.id} onClick={() => openModal((close) => <ItemDialog item={item} onClose={close} />)} className="text-left bg-white rounded-2xl shadow-soft p-3 hover:shadow-md">
-                <BlobImage blob={item.image || null} emoji={item.aiEmoji || 'box'} className="w-full aspect-square rounded-lg object-cover mb-2" />
+                <ItemThumb item={item} className="w-full aspect-square rounded-lg mb-2" />
                 <div className="font-medium text-sm truncate">{item.name}</div>
                 <div className="text-xs text-orange-600 mt-0.5">点击归位</div>
               </button>

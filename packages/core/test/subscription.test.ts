@@ -1,5 +1,5 @@
 import type { StoreName, StoreSchema, Storage } from '../src/storage/types';
-import type { Subscription } from '../src/models';
+import type { Cabinet, Item, Room, Subscription } from '../src/models';
 import { computeSubscriptionEvents } from '../src/services/reminder';
 import {
   buildSubscriptionInsights,
@@ -12,7 +12,11 @@ import {
 import {
   buildSubscriptionImportPlanFromCsv,
   buildSubscriptionImportPlanFromText,
+  buildVoiceSubscriptionDraft,
 } from '../src/services/subscriptionImport';
+import { upgradeArtwork } from '../src/services/appStore';
+import { formatQuickAddLines, parseQuickAddDraft } from '../src/services/quickAdd';
+import { isKitchenInventoryItem } from '../src/services/kitchenSuggestion';
 
 declare const process: { exitCode?: number };
 
@@ -70,7 +74,65 @@ const baseSub = (patch: Partial<Subscription>): Subscription => ({
   ...patch,
 });
 
+function localDateAfter(days: number): string {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+const baseItem = (patch: Partial<Item>): Item => ({
+  id: patch.id || `item-${Math.random()}`,
+  cabinetId: patch.cabinetId || 'cabinet',
+  roomId: patch.roomId || 'kitchen',
+  name: patch.name || 'Item',
+  qty: patch.qty ?? 1,
+  note: patch.note || '',
+  tags: patch.tags || [],
+  status: patch.status || 'placed',
+  source: patch.source || 'manual',
+  createdAt: patch.createdAt || Date.now(),
+  ...patch,
+});
+
 async function run() {
+  const quickAdd = parseQuickAddDraft('书房里有一对真力g1音箱，四个充电宝', {
+    rooms: [
+      { id: 'study', name: '书房' },
+      { id: 'living', name: '客厅' },
+    ],
+  });
+  assert(quickAdd.mode === 'natural', 'voice-style quick add should use natural parser');
+  assert(quickAdd.roomId === 'study', 'voice-style quick add should infer room');
+  assert(quickAdd.lines.length === 2, 'voice-style quick add should extract two items');
+  assert(quickAdd.lines[0]?.name === '真力g1音箱', 'voice-style quick add should extract speaker name');
+  assert(quickAdd.lines[0]?.qty === 2, 'one pair should become quantity 2');
+  assert(quickAdd.lines[1]?.name === '充电宝', 'voice-style quick add should extract power bank name');
+  assert(quickAdd.lines[1]?.qty === 4, 'Chinese quantity should be parsed');
+  assert(formatQuickAddLines(quickAdd.lines) === '真力g1音箱×2\n充电宝×4', 'voice lines should format as quick-add syntax');
+  const quickAddWithoutRooms = parseQuickAddDraft('书房里有一对真力g1音箱，四个充电宝');
+  assert(quickAddWithoutRooms.lines[0]?.name === '真力g1音箱', 'location prefix should not leak into item name');
+  const manual = parseQuickAddDraft('螺丝刀, 工具盒里');
+  assert(manual.lines.length === 1 && manual.lines[0]?.note === '工具盒里', 'manual comma note should stay a note');
+
+  const kitchenRooms: Room[] = [
+    { id: 'kitchen', name: '厨房', icon: '🍳', createdAt: 1 },
+    { id: 'study', name: '书房', icon: '📚', createdAt: 1 },
+  ];
+  const kitchenCabinets: Cabinet[] = [
+    { id: 'desk', roomId: 'study', photoId: null, name: '桌面抽屉收纳盒', rect: { x: 0, y: 0, w: 0, h: 0 }, createdAt: 1 },
+    { id: 'fridge', roomId: 'kitchen', photoId: null, name: '冰箱冷藏', rect: { x: 0, y: 0, w: 0, h: 0 }, createdAt: 1 },
+  ];
+  assert(!isKitchenInventoryItem(baseItem({ name: '粉色章鱼玩偶', roomId: 'study', cabinetId: 'desk' }), kitchenRooms, kitchenCabinets), 'octopus plush should not be kitchen food');
+  assert(!isKitchenInventoryItem(baseItem({ name: '桌面杂物', roomId: 'study', cabinetId: 'desk' }), kitchenRooms, kitchenCabinets), 'desktop clutter should not match the single char 面');
+  assert(!isKitchenInventoryItem(baseItem({ name: '白色抽屉盒', roomId: 'study', cabinetId: 'desk' }), kitchenRooms, kitchenCabinets), 'storage drawer box should not be kitchen food');
+  assert(isKitchenInventoryItem(baseItem({ name: '番茄', roomId: 'study', cabinetId: 'desk' }), kitchenRooms, kitchenCabinets), 'food name should be kitchen inventory even outside kitchen room');
+  assert(isKitchenInventoryItem(baseItem({ name: '牛奶', roomId: 'kitchen', cabinetId: 'fridge' }), kitchenRooms, kitchenCabinets), 'milk should be kitchen inventory');
+  assert(isKitchenInventoryItem(baseItem({ name: '酱油', roomId: 'kitchen', cabinetId: 'fridge' }), kitchenRooms, kitchenCabinets), 'seasoning should be kitchen inventory');
+
   const csv = [
     'name,amount,cycle,nextDueAt,paymentMethod,url,note',
     'ChatGPT Plus,145,monthly,2026-05-20,Apple Pay,,工作工具',
@@ -136,6 +198,69 @@ async function run() {
   assert(findDuplicateSubscriptions(subs).length === 1, 'duplicate finder should group similar subscriptions');
   assert(buildSubscriptionInsights(subs).some((insight) => insight.id === 'price-hike'), 'insights should include price hike');
   assert(computeSubscriptionEvents(subs).some((event) => event.subId === 'c' && event.subtitle.includes('续费前复核')), 'events should include renewal review reminder');
+
+  const autoRenewDue = baseSub({
+    id: 'auto-renew-due',
+    name: 'Auto Renew',
+    autoRenew: true,
+    nextDueAt: localDateAfter(2),
+  });
+  const manualRenewDue = baseSub({
+    id: 'manual-renew-due',
+    name: 'Manual Renew',
+    autoRenew: false,
+    nextDueAt: localDateAfter(6),
+  });
+  const renewalEvents = computeSubscriptionEvents([autoRenewDue, manualRenewDue]);
+  const autoEvent = renewalEvents.find((event) => event.subId === 'auto-renew-due' && event.subtitle.includes('自动续期'));
+  const manualEvent = renewalEvents.find((event) => event.subId === 'manual-renew-due' && event.subtitle.includes('到期'));
+  assert(autoEvent?.level === 'info', 'auto-renew subscription reminders should stay info');
+  assert(manualEvent?.level === 'warn', 'manual-renew subscription reminders should warn inside seven days');
+
+  // ===== App Store 图标：尺寸升级 =====
+  const up = upgradeArtwork('https://is1-ssl.mzstatic.com/image/thumb/abc/100x100bb.jpg');
+  assert(up.includes('512x512bb.jpg'), 'artwork url should upgrade to 512');
+
+  // ===== 语音订阅草稿：本地规则解析 =====
+  const voice = buildVoiceSubscriptionDraft('我开了爱奇艺黄金会员，每个月25块，用微信付的');
+  assert(!!voice && voice.name?.includes('爱奇艺'), 'voice draft should extract name');
+  assert(voice!.amount === 25, 'voice draft should extract amount');
+  assert(voice!.cycle === 'monthly', 'voice draft should infer monthly cycle');
+  assert(voice!.paymentMethod === '微信', 'voice draft should detect WeChat payment');
+  assert(voice!.category === 'membership', 'voice draft should classify membership');
+
+  const voiceYearly = buildVoiceSubscriptionDraft('订阅了 Netflix，每年 588 元');
+  assert(voiceYearly!.cycle === 'yearly', 'voice draft should infer yearly cycle');
+  assert(voiceYearly!.amount === 588, 'voice draft should extract yearly amount');
+
+  // ===== 新增图标字段的清洗：iconUrl / appStoreId 落库 =====
+  const iconPlan = extractSubscriptionActionPlan(
+    '```subscription_actions\n' +
+      JSON.stringify({
+        summary: 'with icon',
+        actions: [
+          {
+            type: 'createSubscription',
+            draft: {
+              name: 'Spotify',
+              category: 'membership',
+              amount: 18,
+              cycle: 'monthly',
+              iconUrl: 'https://example.com/a/512x512bb.jpg',
+              appStoreId: 324684580,
+            },
+          },
+        ],
+      }) +
+      '\n```'
+  );
+  assert(!!iconPlan, 'icon plan should parse');
+  const created = iconPlan!.actions[0];
+  assert(created?.type === 'createSubscription', 'should be create action');
+  if (created?.type === 'createSubscription') {
+    assert(created.draft.iconUrl === 'https://example.com/a/512x512bb.jpg', 'iconUrl should survive sanitize');
+    assert(created.draft.appStoreId === 324684580, 'appStoreId should survive sanitize');
+  }
 }
 
 run()

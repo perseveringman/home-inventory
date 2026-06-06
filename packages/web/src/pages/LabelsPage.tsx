@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
+import jsQR from 'jsqr';
 import {
   createLabel,
   labelToQrText,
@@ -14,6 +15,7 @@ import { openModal } from '../components/Modal';
 import { PinIcon } from '../components/PinIcon';
 import { toast } from '../components/Toast';
 import { getStorage, useStore } from '../stores/useStore';
+import { isNativePlatform } from '../lib/nativeShare';
 import ItemDialog from './modals/ItemDialog';
 
 function QrImage({ label }: { label: Label }) {
@@ -116,17 +118,27 @@ export default function LabelsPage() {
 
   const scanImage = async (file?: File | null) => {
     if (!file) return;
-    const BarcodeDetector = (window as any).BarcodeDetector;
-    if (!BarcodeDetector) {
-      toast('当前浏览器不支持离线二维码识别，可手动输入标签码');
-      return;
-    }
     try {
-      const detector = new BarcodeDetector({ formats: ['qr_code'] });
       const bitmap = await createImageBitmap(file);
-      const codes = await detector.detect(bitmap);
+      const canvas = document.createElement('canvas');
+      // 太大的图先缩到 1024，jsqr 只看像素强度，分辨率够用就行
+      const maxSide = 1024;
+      const ratio = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+      canvas.width = Math.max(1, Math.round(bitmap.width * ratio));
+      canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) {
+        bitmap.close?.();
+        toast('当前环境不支持图片解码');
+        return;
+      }
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
       bitmap.close?.();
-      const raw = codes[0]?.rawValue;
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(imageData.data, imageData.width, imageData.height, {
+        inversionAttempts: 'attemptBoth',
+      });
+      const raw = code?.data;
       if (!raw) {
         toast('没有识别到二维码');
         return;
@@ -147,9 +159,11 @@ export default function LabelsPage() {
         title="二维码标签"
         subtitle={`${linkedLabels.length} 已绑定 · ${blanks.length} 空标签`}
         actions={
-          <button onClick={() => window.print()} className="px-3 py-1.5 rounded-lg bg-brand-500 text-white text-sm">
-            打印
-          </button>
+          isNativePlatform() ? null : (
+            <button onClick={() => window.print()} className="px-3 py-1.5 rounded-lg bg-brand-500 text-white text-sm">
+              打印
+            </button>
+          )
         }
       />
 

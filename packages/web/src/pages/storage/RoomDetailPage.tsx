@@ -1,9 +1,8 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   compressImage,
-  createScanSessionFromDetection,
-  detectCabinetsAndItems,
+  createRecognitionTask,
   uid,
   type Photo,
 } from '@home-inventory/core';
@@ -17,6 +16,7 @@ import LooseListDialog from '../modals/LooseListDialog';
 import RoomDialog from '../modals/RoomDialog';
 import { PinIcon } from '../../components/PinIcon';
 import { Glyph } from '../../components/Glyph';
+import { pickImage } from '../../lib/nativeImage';
 
 export default function RoomDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -25,12 +25,11 @@ export default function RoomDetailPage() {
   const photos = useStore((s) => s.photos);
   const cabinets = useStore((s) => s.cabinets);
   const items = useStore((s) => s.items);
+  const recognitionTasks = useStore((s) => s.recognitionTasks);
   const scanSessions = useStore((s) => s.scanSessions);
   const put = useStore((s) => s.put);
   const del = useStore((s) => s.del);
   const reloadAll = useStore((s) => s.reloadAll);
-  const cameraRef = useRef<HTMLInputElement>(null);
-  const pickerRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
 
   const room = rooms.find((r) => r.id === id);
@@ -46,6 +45,17 @@ export default function RoomDetailPage() {
     [scanSessions, id]
   );
   const latestReviewSession = myReviewSessions[0];
+  const myActiveRecognitionTasks = useMemo(
+    () =>
+      recognitionTasks
+        .filter(
+          (task) =>
+            task.roomId === id &&
+            (task.status === 'queued' || task.status === 'processing' || task.status === 'failed')
+        )
+        .sort((a, b) => a.createdAt - b.createdAt),
+    [recognitionTasks, id]
+  );
   const looseCabinet = cabinets.find((c) => c.roomId === id && c.type === 'loose');
   const looseItems = items
     .filter((item) => item.cabinetId === looseCabinet?.id || (item.roomId === id && item.status === 'pending'))
@@ -59,27 +69,34 @@ export default function RoomDetailPage() {
     );
   }
 
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
+  const onFile = async (file: File | null | undefined, source: 'camera' | 'gallery') => {
+    if (!file || !id) return;
     setBusy(true);
     try {
       const { blob, width, height } = await compressImage(file);
       const photo: Photo = { id: uid(), roomId: id, blob, width, height, createdAt: Date.now() };
       await put('photos', photo);
-      const storage = getStorage();
-      toast('已上传，AI 识别中…', 2500);
-      const result = await detectCabinetsAndItems(blob, { width, height }, {});
-      const session = await createScanSessionFromDetection(storage, photo, result);
+      await createRecognitionTask(getStorage(), photo, source);
       await reloadAll();
-      toast(`识别完成：${result.cabinets.length} 个柜子 · ${result.items.length} 件候选`, 3000);
-      navigate(`/scan/${session.id}`);
+      toast('已加入识别队列，完成后会进入收集箱', 3000);
+      navigate('/inbox');
     } catch (err: any) {
       console.error(err);
-      toast('上传失败：' + (err?.message || 'unknown'), 3000);
+      toast('入队失败：' + (err?.message || 'unknown'), 3000);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const triggerPick = async (source: 'camera' | 'gallery') => {
+    if (busy) return;
+    try {
+      const file = await pickImage({ source });
+      if (!file) return;
+      await onFile(file, source);
+    } catch (err: any) {
+      console.error(err);
+      toast('打开相机失败：' + (err?.message || 'unknown'), 3000);
     }
   };
 
@@ -104,18 +121,16 @@ export default function RoomDetailPage() {
             <button onClick={() => openModal((close) => <RoomDialog room={room} onDone={() => {}} onClose={close} />)} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm">
               编辑
             </button>
-            <button onClick={() => cameraRef.current?.click()} disabled={busy} className="px-3 py-2 bg-brand-500 hover:bg-brand-600 disabled:bg-ink-300 text-white rounded-lg text-sm font-medium">
-              {busy ? '处理中…' : <><Glyph name="camera" size={16} />拍照</>}
+            <button onClick={() => triggerPick('camera')} disabled={busy} className="px-3 py-2 bg-brand-500 hover:bg-brand-600 disabled:bg-ink-300 text-white rounded-lg text-sm font-medium">
+              {busy ? '入队中…' : <><Glyph name="camera" size={16} />拍照</>}
             </button>
           </div>
         }
       />
-      <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={onFile} />
-      <input ref={pickerRef} type="file" accept="image/*" hidden onChange={onFile} />
 
       <div className="px-4 md:px-6 py-4">
         <div className="mb-4 rounded-2xl bg-brand-50 border border-brand-100 p-4 text-sm text-brand-700">
-          拍几张平面照，AI 会生成柜子和物品候选；进入审核台确认后再写入档案。
+          拿框收集物品后拍一张照片，照片会先进入 AI 识别队列；识别完成后会出现在收集箱，等你再确认整理。
         </div>
 
         {latestReviewSession && (
@@ -125,12 +140,28 @@ export default function RoomDetailPage() {
           >
             <PinIcon name="spark" size={46} />
             <div className="flex-1 min-w-0">
-              <div className="font-semibold text-ink-900">还有 {myReviewSessions.length} 个 AI 审核未确认</div>
+              <div className="font-semibold text-ink-900">收集箱里还有 {myReviewSessions.length} 批待整理</div>
               <div className="text-xs text-ink-500 mt-0.5">
                 最新一次包含 {latestReviewSession.candidates.filter((candidate) => candidate.reviewStatus !== 'rejected').length} 个候选
               </div>
             </div>
-            <span className="text-sm text-brand-700">继续审核</span>
+            <span className="text-sm text-brand-700">去整理</span>
+          </button>
+        )}
+
+        {myActiveRecognitionTasks.length > 0 && (
+          <button
+            onClick={() => navigate('/inbox')}
+            className="mb-4 w-full rounded-2xl bg-white border border-brand-100 shadow-soft p-4 text-left hover:shadow-md transition flex items-center gap-3"
+          >
+            <PinIcon name="spark" size={46} />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-ink-900">有 {myActiveRecognitionTasks.length} 个识别任务在队列中</div>
+              <div className="text-xs text-ink-500 mt-0.5">
+                完成后会进入收集箱，失败的任务可在待处理页重试。
+              </div>
+            </div>
+            <span className="text-sm text-brand-700">看队列</span>
           </button>
         )}
 
@@ -141,22 +172,23 @@ export default function RoomDetailPage() {
             description="拍一张照片，AI 会自动识别柜子和物品"
             action={
               <div className="flex justify-center gap-2">
-                <button onClick={() => cameraRef.current?.click()} className="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg"><Glyph name="camera" size={16} />拍照</button>
-                <button onClick={() => pickerRef.current?.click()} className="px-5 py-2.5 bg-white border border-slate-200 rounded-lg"><Glyph name="image" size={16} />选图</button>
+                <button onClick={() => triggerPick('camera')} className="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-lg"><Glyph name="camera" size={16} />拍照</button>
+                <button onClick={() => triggerPick('gallery')} className="px-5 py-2.5 bg-white border border-slate-200 rounded-lg"><Glyph name="image" size={16} />选图</button>
               </div>
             }
           />
         ) : (
           <>
             <div className="mb-4 rounded-2xl border-2 border-dashed border-slate-200 bg-white p-4 flex items-center justify-center gap-3">
-              <button onClick={() => cameraRef.current?.click()} disabled={busy} className="px-4 py-2 rounded-lg bg-brand-500 text-white disabled:bg-ink-300"><Glyph name="camera" size={16} />加照片</button>
-              <button onClick={() => pickerRef.current?.click()} disabled={busy} className="px-4 py-2 rounded-lg bg-slate-100 disabled:bg-ink-100"><Glyph name="image" size={16} />从相册选</button>
+              <button onClick={() => triggerPick('camera')} disabled={busy} className="px-4 py-2 rounded-lg bg-brand-500 text-white disabled:bg-ink-300"><Glyph name="camera" size={16} />加照片</button>
+              <button onClick={() => triggerPick('gallery')} disabled={busy} className="px-4 py-2 rounded-lg bg-slate-100 disabled:bg-ink-100"><Glyph name="image" size={16} />从相册选</button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {myPhotos.map((photo) => {
                 const cabinetCount = cabinets.filter((cabinet) => cabinet.photoId === photo.id).length;
                 const itemCount = items.filter((item) => item.sourcePhotoId === photo.id).length;
                 const reviewSession = myReviewSessions.find((session) => session.photoId === photo.id);
+                const recognitionTask = myActiveRecognitionTasks.find((task) => task.photoId === photo.id);
                 const reviewCandidateCount =
                   reviewSession?.candidates.filter((candidate) => candidate.reviewStatus !== 'rejected').length || 0;
                 return (
@@ -164,7 +196,17 @@ export default function RoomDetailPage() {
                     <BlobImage blob={photo.blob} className="w-full aspect-[4/3] object-cover" />
                     {reviewSession && (
                       <span className="absolute top-2 left-2 px-2 py-1 rounded-full bg-brand-500 text-white text-xs inline-flex items-center gap-1">
-                        <PinIcon name="spark" size={18} tile={false} />审核中
+                        <PinIcon name="spark" size={18} tile={false} />收集箱
+                      </span>
+                    )}
+                    {!reviewSession && recognitionTask && (
+                      <span className="absolute top-2 left-2 px-2 py-1 rounded-full bg-brand-500 text-white text-xs inline-flex items-center gap-1">
+                        <PinIcon name="spark" size={18} tile={false} />
+                        {recognitionTask.status === 'queued'
+                          ? '排队中'
+                          : recognitionTask.status === 'processing'
+                            ? '识别中'
+                            : '识别失败'}
                       </span>
                     )}
                     <span className="absolute top-2 right-2 px-2 py-1 rounded-full bg-black/55 text-white text-xs inline-flex items-center gap-1"><PinIcon name="cabinet" size={18} tile={false} />{cabinetCount}</span>
@@ -172,7 +214,11 @@ export default function RoomDetailPage() {
                       <div>
                         <div className="enamel-meta text-sm text-ink-700"><span><PinIcon name="cabinet" size={18} tile={false} />{cabinetCount} 柜</span><span><PinIcon name="box" size={18} tile={false} />{itemCount} 物</span></div>
                         <div className="text-xs text-ink-500 mt-0.5">
-                          {reviewSession ? `${reviewCandidateCount} 个候选待确认` : new Date(photo.createdAt).toLocaleDateString()}
+                          {reviewSession
+                            ? `${reviewCandidateCount} 个候选待整理`
+                            : recognitionTask
+                              ? '等待进入收集箱'
+                              : new Date(photo.createdAt).toLocaleDateString()}
                         </div>
                       </div>
                       <div className="flex items-center gap-1">
@@ -184,7 +230,7 @@ export default function RoomDetailPage() {
                             }}
                             className="px-2.5 py-1.5 rounded-lg bg-brand-50 text-brand-700 text-xs"
                           >
-                            继续
+                            整理
                           </button>
                         )}
                         <button

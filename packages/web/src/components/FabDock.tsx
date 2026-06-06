@@ -1,9 +1,8 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   compressImage,
-  createScanSessionFromDetection,
-  detectCabinetsAndItems,
+  createRecognitionTask,
   GLOBAL_ROOM_ID,
   uid,
   type Photo,
@@ -14,6 +13,7 @@ import { getStorage, useStore } from '../stores/useStore';
 import QuickAddDialog from '../pages/modals/QuickAddDialog';
 import { ChatDrawer } from './ChatDrawer';
 import { PinIcon } from './PinIcon';
+import { pickImage } from '../lib/nativeImage';
 
 export function FabDock() {
   const location = useLocation();
@@ -21,8 +21,6 @@ export function FabDock() {
   const photos = useStore((s) => s.photos);
   const reloadAll = useStore((s) => s.reloadAll);
   const put = useStore((s) => s.put);
-  const camRef = useRef<HTMLInputElement>(null);
-  const pickRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
 
@@ -36,45 +34,43 @@ export function FabDock() {
 
   const quickAdd = () => openModal((close) => <QuickAddDialog defaultRoomId={targetRoomId() || undefined} onClose={close} />);
 
-  const scan = async (file?: File | null) => {
+  const enqueueRecognition = async (file: File | null | undefined, source: 'camera' | 'gallery') => {
     if (!file) return;
     setBusy(true);
     try {
       const compressed = await compressImage(file);
       const storage = getStorage();
-      toast('AI 正在识别物品…', 2500);
-      const existingPhotoId = location.pathname.match(/^\/photo\/([^/]+)/)?.[1];
-      const existingPhoto = existingPhotoId
-        ? photos.find((photo) => photo.id === existingPhotoId) || null
-        : null;
-      const photo: Photo =
-        existingPhoto ||
-        {
-          id: uid(),
-          roomId: targetRoomId() || GLOBAL_ROOM_ID,
-          blob: compressed.blob,
-          width: compressed.width,
-          height: compressed.height,
-          createdAt: Date.now(),
-        };
-      if (!existingPhoto) await put('photos', photo);
-      const result = await detectCabinetsAndItems(compressed.blob, compressed, {});
-      const session = await createScanSessionFromDetection(storage, photo, result);
+      const photo: Photo = {
+        id: uid(),
+        roomId: targetRoomId() || GLOBAL_ROOM_ID,
+        blob: compressed.blob,
+        width: compressed.width,
+        height: compressed.height,
+        createdAt: Date.now(),
+      };
+      await put('photos', photo);
+      await createRecognitionTask(storage, photo, source);
       await reloadAll();
-      toast(`识别了 ${result.cabinets.length + result.items.length} 个候选，进入审核台`, 3000);
-      navigate(`/scan/${session.id}`);
+      toast('已加入识别队列，完成后会进入收集箱', 3000);
+      navigate('/inbox');
     } catch (err: any) {
       console.error(err);
-      toast('识别失败：' + (err?.message || 'unknown'), 3000);
+      toast('入队失败：' + (err?.message || 'unknown'), 3000);
     } finally {
       setBusy(false);
     }
   };
 
-  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    scan(file);
+  const triggerPick = async (source: 'camera' | 'gallery') => {
+    if (busy) return;
+    try {
+      const file = await pickImage({ source });
+      if (!file) return;
+      await enqueueRecognition(file, source);
+    } catch (err: any) {
+      console.error(err);
+      toast('打开相机失败：' + (err?.message || 'unknown'), 3000);
+    }
   };
 
   return (
@@ -86,11 +82,9 @@ export function FabDock() {
       <div className="fab-dock">
         <button onClick={() => setChatOpen(true)} className="fab-btn" title="AI 对话助手" aria-label="AI 对话助手"><PinIcon name="chat" size={32} tile={false} /></button>
         <button onClick={quickAdd} className="fab-btn" title="快速文字录入" aria-label="快速文字录入"><PinIcon name="edit" size={32} tile={false} /></button>
-        <button onClick={() => pickRef.current?.click()} disabled={busy} className="fab-btn" title="选图即时识别" aria-label="选图即时识别">{busy ? <span className="fab-dot" /> : <PinIcon name="gallery" size={32} tile={false} />}</button>
-        <button onClick={() => camRef.current?.click()} disabled={busy} className="fab-btn" title="拍照即时识别" aria-label="拍照即时识别">{busy ? <span className="fab-dot" /> : <PinIcon name="camera" size={32} tile={false} />}</button>
+        <button onClick={() => triggerPick('gallery')} disabled={busy} className="fab-btn" title="选图加入识别队列" aria-label="选图加入识别队列">{busy ? <span className="fab-dot" /> : <PinIcon name="gallery" size={32} tile={false} />}</button>
+        <button onClick={() => triggerPick('camera')} disabled={busy} className="fab-btn" title="拍照加入识别队列" aria-label="拍照加入识别队列">{busy ? <span className="fab-dot" /> : <PinIcon name="camera" size={32} tile={false} />}</button>
       </div>
-      <input ref={pickRef} type="file" accept="image/*" hidden onChange={onFile} />
-      <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={onFile} />
       <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} />
     </>
   );

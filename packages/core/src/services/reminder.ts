@@ -186,10 +186,13 @@ export function computeSubscriptionEvents(subs: Subscription[]): ReminderEvent[]
       if (!isNaN(dueMs)) {
         const remain = Math.ceil((dueMs - now) / (24 * 3600 * 1000));
         if (remain <= 14) {
+          const isAutoRenew = sub.autoRenew !== false;
           let level: ReminderLevel = 'info';
-          if (remain < 0) level = 'critical';
-          else if (remain <= 3) level = 'critical';
-          else if (remain <= 7) level = 'warn';
+          if (!isAutoRenew) {
+            if (remain < 0) level = 'critical';
+            else if (remain <= 3) level = 'critical';
+            else if (remain <= 7) level = 'warn';
+          }
           const amount = sub.amount ? `¥${(+sub.amount).toFixed(2)}` : '';
           events.push({
             kind: 'subscription',
@@ -198,10 +201,16 @@ export function computeSubscriptionEvents(subs: Subscription[]): ReminderEvent[]
             title: sub.name,
             subtitle:
               remain < 0
-                ? `已逾期 ${-remain} 天${amount ? ` · ${amount}` : ''}`
+                ? isAutoRenew
+                  ? `已自动续期 ${-remain} 天${amount ? ` · ${amount}` : ''}`
+                  : `已到期 ${-remain} 天${amount ? ` · ${amount}` : ''} · 请确认是否续期`
                 : remain === 0
-                ? `今天扣款${amount ? ` · ${amount}` : ''}`
-                : `${remain} 天后扣款${amount ? ` · ${amount}` : ''}`,
+                ? isAutoRenew
+                  ? `今天自动续期${amount ? ` · ${amount}` : ''}`
+                  : `今天到期${amount ? ` · ${amount}` : ''}`
+                : isAutoRenew
+                ? `${remain} 天后自动续期${amount ? ` · ${amount}` : ''}`
+                : `${remain} 天后到期${amount ? ` · ${amount}` : ''}`,
             daysLeft: remain,
             icon: REMINDER_ICONS.subscription,
           });
@@ -213,7 +222,7 @@ export function computeSubscriptionEvents(subs: Subscription[]): ReminderEvent[]
           if (reviewRemain <= 7 && sub.decision !== 'keep') {
             events.push({
               kind: 'subscription',
-              level: reviewRemain < 0 ? 'warn' : 'info',
+              level: sub.autoRenew !== false ? 'info' : reviewRemain < 0 ? 'warn' : 'info',
               subId: sub.id,
               title: sub.name,
               subtitle: `续费前复核 · ${sub.decision === 'cancel' ? '倾向取消' : '待决策'}`,

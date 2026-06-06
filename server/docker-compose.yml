@@ -1,0 +1,35 @@
+# 家居收纳 · AI 后端（宝塔模式）
+#
+# 部署架构：
+#   公网 :443  ─[宝塔 nginx 反代 + 证书]─>  127.0.0.1:8787  ─>  此容器
+#
+# 这份 compose 只跑 api 容器，端口仅绑 127.0.0.1，外部无法直连，由宝塔 nginx 代理过来。
+# 这是腾讯云国内轻量服 + 宝塔面板环境的推荐方案。
+#
+# 用法：
+#   1. cp .env.example .env 并填好所有变量
+#   2. docker compose up -d --build
+#   3. 在宝塔面板新建反代站点指向 http://127.0.0.1:8787（详见 README.md）
+#
+# 备用方案（无宝塔、纯 docker 环境）：
+#   docker compose -f docker-compose.caddy.yml up -d --build
+#   会用 Caddy 自动处理 HTTPS 与 80/443 端口
+
+services:
+  api:
+    build:
+      # context 必须是仓库根，因为 Dockerfile 要 COPY api/
+      context: ..
+      dockerfile: server/Dockerfile
+    image: home-inventory-api:latest
+    container_name: home-inventory-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 8787
+      HOST: 0.0.0.0
+      NODE_ENV: production
+    # 仅绑 127.0.0.1：外网无法直接 curl 公网IP:8787，必须走宝塔 nginx
+    ports:
+      - "127.0.0.1:8787:8787"

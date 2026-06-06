@@ -1,0 +1,105 @@
+# 部署后端到腾讯云轻量服
+#
+# 触发：推 tag，名字符合 server-vX.Y.Z（如 server-v1.0.0）
+#   git tag server-v1.0.0
+#   git push origin server-v1.0.0
+#
+# 或在 Actions 页面手动 Run workflow（workflow_dispatch）。
+#
+# 需要在仓库 Settings → Secrets and variables → Actions 里配置：
+#   SERVER_HOST            轻量服公网 IP 或 ssh 域名
+#   SERVER_PORT            SSH 端口（默认 22；如改过填新的）
+#   SERVER_USER            登录用户（如 root / ubuntu / lighthouse）
+#   SERVER_SSH_KEY         私钥全文（id_ed25519 内容，含 BEGIN/END 行）
+#   SERVER_DEPLOY_PATH     仓库在服务器上的路径（如 /www/wwwroot/home-inventory）
+#
+# 不在 secrets 的可选 vars（Settings → Variables）：
+#   SERVER_DOCKER_SUDO     设为 "true" 时用 sudo docker（用户不在 docker 组才需要）
+
+name: Deploy server
+
+on:
+  push:
+    tags:
+      - 'server-v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要部署的 git ref（默认当前分支 HEAD）'
+        required: false
+        default: ''
+
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Pull & rebuild on lighthouse
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve ref
+        id: ref
+        run: |
+          if [ -n "${{ github.event.inputs.ref }}" ]; then
+            echo "value=${{ github.event.inputs.ref }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          # 防止首次连接 host key 校验失败
+          fingerprint: ''
+          script_stop: true
+          envs: DEPLOY_REF,DEPLOY_PATH,DOCKER_SUDO
+          script: |
+            set -euo pipefail
+            cd "$DEPLOY_PATH"
+
+            DOCKER="docker"
+            if [ "${DOCKER_SUDO:-}" = "true" ]; then DOCKER="sudo docker"; fi
+
+            echo "==> Fetching latest from origin"
+            git fetch --all --tags --prune
+            git checkout --force "$DEPLOY_REF"
+            git reset --hard "$DEPLOY_REF"
+            git submodule update --init --recursive || true
+
+            echo "==> Building & restarting api container"
+            cd server
+            $DOCKER compose pull || true
+            $DOCKER compose up -d --build --remove-orphans
+
+            echo "==> Pruning old images"
+            $DOCKER image prune -f
+
+            echo "==> Health check"
+            for i in $(seq 1 10); do
+              if curl -fsS http://127.0.0.1:8787/healthz >/dev/null; then
+                echo "OK ($i)"; exit 0
+              fi
+              echo "waiting... ($i)"; sleep 2
+            done
+            echo "Health check failed"
+            $DOCKER compose logs --tail=80 api || true
+            exit 1
+        env:
+          DEPLOY_REF: ${{ steps.ref.outputs.value }}
+          DEPLOY_PATH: ${{ secrets.SERVER_DEPLOY_PATH }}
+          DOCKER_SUDO: ${{ vars.SERVER_DOCKER_SUDO }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Deploy summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- ref: \`${{ steps.ref.outputs.value }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- host: \`${{ secrets.SERVER_HOST }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- path: \`${{ secrets.SERVER_DEPLOY_PATH }}\`" >> $GITHUB_STEP_SUMMARY

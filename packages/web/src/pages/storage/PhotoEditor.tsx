@@ -1,8 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  createScanSessionFromDetection,
-  detectCabinetsAndItems,
+  createRecognitionTask,
   uid,
   type Cabinet,
   type Photo,
@@ -90,19 +89,17 @@ export default function PhotoEditor({ photo, cabinets }: Props) {
   };
 
   const runAI = async () => {
-    if (!confirm('重新 AI 识别会生成一个新的审核台，现有柜子和物品会保留，继续？')) return;
+    if (!confirm('重新 AI 识别会生成一个队列任务，现有柜子和物品会保留，继续？')) return;
     setBusy(true);
     try {
-      const storage = getStorage();
-      const detected = await detectCabinetsAndItems(photo.blob, { width: photo.width, height: photo.height }, {});
-      const session = await createScanSessionFromDetection(storage, photo, detected);
+      await createRecognitionTask(getStorage(), photo, 'photo');
       setLocalRects({});
       await reloadAll();
-      toast(`识别完成：${detected.cabinets.length} 个柜子 · ${detected.items.length} 件候选`, 3000);
-      navigate(`/scan/${session.id}`);
+      toast('已加入识别队列，完成后会进入收集箱', 3000);
+      navigate('/inbox');
     } catch (err: any) {
       console.error(err);
-      toast('识别失败：' + (err?.message || 'unknown'), 3000);
+      toast('入队失败：' + (err?.message || 'unknown'), 3000);
     } finally {
       setBusy(false);
     }
@@ -172,7 +169,7 @@ export default function PhotoEditor({ photo, cabinets }: Props) {
     <div>
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <button onClick={runAI} disabled={busy} className="px-3 py-1.5 rounded-lg bg-brand-500 text-white text-sm disabled:bg-ink-300">
-          {busy ? '识别中…' : <><Glyph name="sparkle" size={16} />AI 识别</>}
+          {busy ? '入队中…' : <><Glyph name="sparkle" size={16} />AI 识别</>}
         </button>
         <button onClick={() => setMode(mode === 'draw' ? 'view' : 'draw')} className={`px-3 py-1.5 rounded-lg text-sm ${mode === 'draw' ? 'bg-emerald-500 text-white' : 'bg-white shadow-soft'}`}>
           <Glyph name="plus" size={16} />手动框选

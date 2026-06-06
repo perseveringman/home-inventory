@@ -7,3 +7,13 @@ dist
 .vite
 coverage
 .turbo
+
+# Capacitor / iOS
+packages/web/ios/App/Pods
+packages/web/ios/App/build
+packages/web/ios/App/App/public
+packages/web/ios/.sourcemaps
+packages/web/ios/DerivedData
+packages/web/android/.gradle
+packages/web/android/build
+packages/web/android/app/build

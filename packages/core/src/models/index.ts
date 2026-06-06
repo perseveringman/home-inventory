@@ -67,6 +67,26 @@ export interface ScanSession {
   appliedAt?: number;
 }
 
+export type RecognitionTaskStatus = 'queued' | 'processing' | 'completed' | 'failed';
+export type RecognitionTaskSource = 'camera' | 'gallery' | 'photo';
+
+export interface RecognitionTask {
+  id: ID;
+  photoId: ID;
+  roomId: ID | '__global__';
+  source: RecognitionTaskSource;
+  status: RecognitionTaskStatus;
+  createdAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  scanSessionId?: ID;
+  candidateCounts?: {
+    cabinets: number;
+    items: number;
+  };
+  errorMessage?: string;
+}
+
 export type LabelTargetType = 'room' | 'cabinet' | 'item';
 export type LabelStatus = 'unclaimed' | 'linked' | 'revoked';
 
@@ -160,6 +180,21 @@ export interface Item {
   lastTouchedAt?: number;
 }
 
+/* ========== 物品清单（手动维护的物品集合，多对多） ========== */
+
+export interface ItemList {
+  id: ID;
+  name: string;
+  /** 单 emoji，做为清单封面图标 */
+  emoji?: string;
+  /** 清单包含的物品 id（多对多关系存这里） */
+  itemIds: ID[];
+  /** 用户写的简短描述 */
+  note?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /* ========== 订阅（定期账单） ========== */
 
 export type SubCategory =
@@ -201,7 +236,12 @@ export interface CancellationStep {
 export interface Subscription {
   id: ID;
   name: string;
+  /** 短文字标识（如 NF），无图标时回退展示 */
   icon?: string;
+  /** 应用图标：可为远程 url 或内联 dataURL（来自 App Store / 用户上传） */
+  iconUrl?: string;
+  /** iTunes trackId，标记该订阅关联的 App Store 应用 */
+  appStoreId?: number;
   category: SubCategory;
   amount: number;
   currency?: string;

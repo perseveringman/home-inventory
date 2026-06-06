@@ -1,0 +1,36 @@
+{
+	# Caddy 全局配置
+	# 邮箱用于 Let's Encrypt 续期通知；可不填但建议留个能收信的
+	# email your@example.com
+	admin off
+}
+
+homeapp.zyb.world {
+	# 隐藏 server header
+	header -Server
+
+	# 安全相关响应头（保守默认，按需调整）
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "interest-cohort=()"
+	}
+
+	# 把所有请求反代到 api 容器
+	reverse_proxy api:8787 {
+		# 流式响应（Claude/OpenRouter SSE）需要保持长连接
+		flush_interval -1
+		# 透传客户端真实 IP
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+	}
+
+	# 简易访问日志（json 格式，写到 docker stdout）
+	log {
+		output stdout
+		format json
+	}
+}

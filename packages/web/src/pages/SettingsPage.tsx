@@ -1,17 +1,61 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   bindSyncDirectory,
   doSyncNow,
   exportZip,
+  getConfig,
   importZip,
   isFileSystemAccessSupported,
   loadDemoData,
+  setConfig,
+  setUserApiKey,
   unbindSyncDirectory,
+  type AiProvider,
 } from '@home-inventory/core';
 import { Header } from '../components/Header';
 import { toast } from '../components/Toast';
 import { getStorage, useStore } from '../stores/useStore';
 import { PinIcon } from '../components/PinIcon';
+import { shareOrDownloadBlob } from '../lib/nativeShare';
+
+interface ProviderMeta {
+  provider: AiProvider;
+  label: string;
+  configKey: string;
+  hint: string;
+  placeholder: string;
+}
+
+const AI_PROVIDERS: ProviderMeta[] = [
+  {
+    provider: 'minimax',
+    label: 'MiniMax Token Plan',
+    configKey: 'userApiKey_minimax',
+    hint: 'MiniMax M3 多模态主力，用于柜子/物品视觉识别、图片物品建议和订阅截图识别。',
+    placeholder: 'sk-cp-...',
+  },
+  {
+    provider: 'openrouter',
+    label: 'OpenRouter',
+    configKey: 'userApiKey_openrouter',
+    hint: '主要用于柜子/物品视觉识别、对话回退、订阅截图识别。',
+    placeholder: 'sk-or-v1-...',
+  },
+  {
+    provider: 'deepseek',
+    label: 'DeepSeek',
+    configKey: 'userApiKey_deepseek',
+    hint: '默认对话/物品建议优先走 DeepSeek 文本模型。',
+    placeholder: 'sk-...',
+  },
+  {
+    provider: 'claude',
+    label: 'Claude',
+    configKey: 'userApiKey_claude',
+    hint: '可选：当 OpenRouter 视觉失败时回退到 Claude Vision。',
+    placeholder: 'sk-ant-...',
+  },
+];
 
 export default function SettingsPage() {
   const reloadAll = useStore((s) => s.reloadAll);
@@ -25,6 +69,65 @@ export default function SettingsPage() {
   const importRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [lastSync, setLastSync] = useState('');
+  const [keyDrafts, setKeyDrafts] = useState<Record<AiProvider, string>>({
+    minimax: '',
+    openrouter: '',
+    deepseek: '',
+    claude: '',
+  });
+  const [revealedKeys, setRevealedKeys] = useState<Record<AiProvider, boolean>>({
+    minimax: false,
+    openrouter: false,
+    deepseek: false,
+    claude: false,
+  });
+  const [keysLoaded, setKeysLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const storage = getStorage();
+      const entries = await Promise.all(
+        AI_PROVIDERS.map(async (meta) => {
+          const value = await getConfig<string>(storage, meta.configKey, '');
+          return [meta.provider, value] as const;
+        })
+      );
+      if (cancelled) return;
+      setKeyDrafts((prev) => {
+        const next = { ...prev };
+        for (const [provider, value] of entries) next[provider] = value;
+        return next;
+      });
+      setKeysLoaded(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const updateDraft = (provider: AiProvider, value: string) => {
+    setKeyDrafts((prev) => ({ ...prev, [provider]: value }));
+  };
+
+  const toggleReveal = (provider: AiProvider) => {
+    setRevealedKeys((prev) => ({ ...prev, [provider]: !prev[provider] }));
+  };
+
+  const saveKey = async (meta: ProviderMeta) => {
+    const value = (keyDrafts[meta.provider] || '').trim();
+    await setConfig(getStorage(), meta.configKey, value);
+    setUserApiKey(meta.provider, value);
+    setKeyDrafts((prev) => ({ ...prev, [meta.provider]: value }));
+    toast(value ? `${meta.label} key 已保存，将直连官方 API` : `${meta.label} key 已清空，回退到后端代理`);
+  };
+
+  const clearKey = async (meta: ProviderMeta) => {
+    await setConfig(getStorage(), meta.configKey, '');
+    setUserApiKey(meta.provider, '');
+    setKeyDrafts((prev) => ({ ...prev, [meta.provider]: '' }));
+    toast(`${meta.label} key 已清空`);
+  };
 
   const storageMB = ((photos.reduce((sum, photo) => sum + (photo.blob?.size || 0), 0) + items.reduce((sum, item) => sum + (item.image?.size || 0), 0)) / 1024 / 1024).toFixed(2);
 
@@ -40,12 +143,11 @@ export default function SettingsPage() {
     setBusy(true);
     try {
       const blob = await exportZip(getStorage());
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `home-inventory-${new Date().toISOString().slice(0, 10)}.zip`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const filename = `home-inventory-${new Date().toISOString().slice(0, 10)}.zip`;
+      await shareOrDownloadBlob(blob, filename, {
+        dialogTitle: '导出家居收纳备份',
+        mimeType: 'application/zip',
+      });
       toast('已导出 ZIP');
     } catch (err: any) {
       toast('导出失败：' + (err?.message || 'unknown'), 3000);
@@ -137,6 +239,69 @@ export default function SettingsPage() {
         </section>
 
         <section className="bg-white rounded-2xl shadow-soft p-5">
+          <h2 className="font-semibold mb-1 inline-flex items-center gap-2"><PinIcon name="spark" size={30} />AI 直连密钥（可选）</h2>
+          <p className="text-xs text-ink-500 mb-3">
+            填入你自己的 API key 后，AI 调用会直接打到官方接口，跳过后端代理。
+            留空则继续走配置好的后端（VITE_API_BASE_URL / Vercel Functions）。
+            密钥只保存在本机 IndexedDB，导出 ZIP 时会一并带走，请自行注意安全。
+          </p>
+          <div className="space-y-3">
+            {AI_PROVIDERS.map((meta) => {
+              const draft = keyDrafts[meta.provider];
+              const revealed = revealedKeys[meta.provider];
+              return (
+                <div key={meta.provider} className="rounded-xl bg-slate-50 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-sm font-medium text-ink-800">{meta.label}</div>
+                    <span className={`text-[11px] px-2 py-0.5 rounded-full ${draft ? 'bg-brand-100 text-brand-600' : 'bg-slate-200 text-ink-500'}`}>
+                      {draft ? '已直连' : '走后端'}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-ink-500 mb-2">{meta.hint}</div>
+                  <div className="flex gap-2">
+                    <input
+                      type={revealed ? 'text' : 'password'}
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={draft}
+                      placeholder={meta.placeholder}
+                      onChange={(e) => updateDraft(meta.provider, e.target.value)}
+                      disabled={!keysLoaded}
+                      className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => toggleReveal(meta.provider)}
+                      className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs"
+                    >
+                      {revealed ? '隐藏' : '查看'}
+                    </button>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => saveKey(meta)}
+                      disabled={!keysLoaded}
+                      className="px-3 py-1.5 rounded-lg bg-brand-500 text-white text-xs disabled:opacity-60"
+                    >
+                      保存
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => clearKey(meta)}
+                      disabled={!keysLoaded || !draft}
+                      className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs disabled:opacity-50"
+                    >
+                      清空
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="bg-white rounded-2xl shadow-soft p-5">
           <h2 className="font-semibold mb-3 inline-flex items-center gap-2"><PinIcon name="box" size={30} />导入导出 / 示例数据</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <button onClick={downloadZip} disabled={busy} className="py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60">导出 ZIP</button>
@@ -190,7 +355,7 @@ export default function SettingsPage() {
           <p>1. 在房间内上传照片，AI 会先生成扫描审核台；确认候选后才写入柜子和待归位物品。</p>
           <p>2. 待处理页可生成 AI 分拣方案，批量把物品归位到最合适的房间或柜子。</p>
           <p>3. 标签页可生成、打印、扫描二维码标签；二维码只保存稳定标签码，内容从本地数据库读取。</p>
-          <p>4. 右下角悬浮按钮支持 AI 对话、快速文字录入、拍照/选图即时识别。</p>
+          <p>4. 右下角悬浮按钮支持 AI 对话、快速文字录入、拍照/选图加入识别队列。</p>
         </section>
 
         <section className="text-center text-xs text-ink-400 py-4">

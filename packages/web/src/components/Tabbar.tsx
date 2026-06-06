@@ -20,6 +20,8 @@ const TABS: Tab[] = [
       p.startsWith('/photo/') ||
       p.startsWith('/scan/'),
   },
+  { path: '/kitchen', label: '食材', icon: 'room-kitchen', match: (p) => p === '/kitchen' },
+  { path: '/kitchen/tools', label: '厨具', icon: 'cabinet' },
   { path: '/items', label: '物品', icon: 'items' },
   { path: '/search', label: '搜索', icon: 'search' },
 ];
@@ -38,12 +40,14 @@ export function Tabbar() {
             <button
               key={t.path}
               onClick={() => navigate(t.path)}
+              aria-label={t.label}
+              title={t.label}
               className={`flex-1 md:flex-none md:px-6 py-3 md:py-2 md:rounded-xl text-sm font-medium ${
                 active ? 'text-brand-600 md:bg-brand-50' : 'text-ink-500'
               }`}
             >
               <PinIcon name={t.icon} size={22} className="tab-icon" />
-              <span>{t.label}</span>
+              <span className="tab-label">{t.label}</span>
             </button>
           );
         })}

@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../stores/useStore';
 import { Header } from '../components/Header';
-import { BlobImage } from '../components/BlobImage';
+import { ItemThumb } from '../components/ItemThumb';
 import { computeItemEvents, PRESET_TAGS, subscriptionMonthlyCost } from '@home-inventory/core';
 import { PinIcon } from '../components/PinIcon';
 
@@ -157,11 +157,7 @@ export default function OverviewPage() {
                   className="bg-white rounded-xl shadow-soft p-2"
                   title={it.name}
                 >
-                  <BlobImage
-                    blob={it.image || null}
-                    emoji={it.aiEmoji || 'box'}
-                    className="w-full aspect-square rounded-lg object-cover"
-                  />
+                  <ItemThumb item={it} className="w-full aspect-square rounded-lg" />
                   <div className="text-xs font-medium truncate mt-1">{it.name}</div>
                 </div>
               ))}

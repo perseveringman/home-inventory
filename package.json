@@ -9,7 +9,11 @@
     "preview": "pnpm --filter @home-inventory/web preview",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter @home-inventory/core test",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "ios:add": "pnpm --filter @home-inventory/web ios:add",
+    "ios:sync": "pnpm --filter @home-inventory/web ios:sync",
+    "ios:open": "pnpm --filter @home-inventory/web ios:open",
+    "ios:run": "pnpm --filter @home-inventory/web ios:run"
   },
   "packageManager": "pnpm@9.12.0",
   "engines": {

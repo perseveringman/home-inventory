@@ -1,11 +1,14 @@
 /**
  * AI 识别服务：用 Vision 模型识别柜子 + 物品。
- * 提供 OpenRouter (Gemini) 和 Claude 两种实现，自动回退到启发式占位。
+ * 提供 MiniMax M3、OpenRouter (Gemini) 和 Claude 实现，自动回退到启发式占位。
  */
 import { fileToBase64 } from '../utils/image';
+import { apiAuthHeaders, apiUrl, getUserApiKey } from './apiBase';
 
 const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
+const MINIMAX_API = 'https://api.minimaxi.com/v1/chat/completions';
 const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
+const DEFAULT_MINIMAX_MODEL = 'MiniMax-M3';
 const DEFAULT_DETECTION_REPAIR_ROUNDS = 2;
 const MAX_DETECTION_REPAIR_ROUNDS = 3;
 
@@ -226,18 +229,81 @@ async function parseDetectionWithRepair({
   );
 }
 
-/* ---------- OpenRouter (Gemini Vision) ---------- */
+function imageDataUrl(blob: Blob, base64: string): string {
+  return `data:${blob.type || 'image/jpeg'};base64,${base64}`;
+}
+
+/* ---------- MiniMax M3 Vision ---------- */
+
+async function callMiniMax(
+  apiKey: string | undefined,
+  model: string,
+  messages: any[]
+): Promise<string> {
+  const effectiveKey = apiKey || getUserApiKey('minimax') || undefined;
+  const res = await fetch(effectiveKey ? MINIMAX_API : apiUrl('/api/ai/minimax'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(effectiveKey ? { Authorization: `Bearer ${effectiveKey}` } : apiAuthHeaders()),
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_completion_tokens: 4096,
+      reasoning_split: true,
+      temperature: 0.2,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`MiniMax API (${res.status}): ${err.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || 'MiniMax 返回错误');
+  return data.choices?.[0]?.message?.content || '';
+}
+
+async function detectWithMiniMax(
+  apiKey: string | undefined,
+  model: string,
+  blob: Blob,
+  maxRepairRounds: number
+): Promise<DetectionResult> {
+  const base64 = await fileToBase64(blob);
+  const initialMessages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: CABINET_DETECT_PROMPT },
+        {
+          type: 'image_url',
+          image_url: { url: imageDataUrl(blob, base64) },
+        },
+      ],
+    },
+  ];
+  return parseDetectionWithRepair({
+    provider: 'MiniMax',
+    initialMessages,
+    callModel: (messages) => callMiniMax(apiKey, model, messages),
+    maxRepairRounds,
+  });
+}
+
+/* ---------- OpenRouter (Gemini Vision, legacy fallback) ---------- */
 
 async function callOpenRouter(
   apiKey: string | undefined,
   model: string,
   messages: any[]
 ): Promise<string> {
-  const res = await fetch(apiKey ? OPENROUTER_API : '/api/ai/openrouter', {
+  const effectiveKey = apiKey || getUserApiKey('openrouter') || undefined;
+  const res = await fetch(effectiveKey ? OPENROUTER_API : apiUrl('/api/ai/openrouter'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...(effectiveKey ? { Authorization: `Bearer ${effectiveKey}` } : apiAuthHeaders()),
     },
     body: JSON.stringify({ model, messages, max_tokens: 4096 }),
   });
@@ -264,7 +330,7 @@ async function detectWithGemini(
         { type: 'text', text: CABINET_DETECT_PROMPT },
         {
           type: 'image_url',
-          image_url: { url: `data:image/jpeg;base64,${base64}` },
+          image_url: { url: imageDataUrl(blob, base64) },
         },
       ],
     },
@@ -302,13 +368,14 @@ async function detectWithClaude(
     }
   }
   const base64 = await fileToBase64(imgBlob);
+  const mediaType = imgBlob.type || 'image/jpeg';
   const initialMessages = [
     {
       role: 'user',
       content: [
         {
           type: 'image',
-          source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
+          source: { type: 'base64', media_type: mediaType, data: base64 },
         },
         { type: 'text', text: CABINET_DETECT_PROMPT },
       ],
@@ -323,17 +390,18 @@ async function detectWithClaude(
 }
 
 async function callClaude(apiKey: string | undefined, messages: any[]): Promise<string> {
-  const res = await fetch(apiKey ? ANTHROPIC_API : '/api/ai/claude', {
+  const effectiveKey = apiKey || getUserApiKey('claude') || undefined;
+  const res = await fetch(effectiveKey ? ANTHROPIC_API : apiUrl('/api/ai/claude'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(apiKey
+      ...(effectiveKey
         ? {
-            'x-api-key': apiKey,
+            'x-api-key': effectiveKey,
             'anthropic-version': '2023-06-01',
             'anthropic-dangerous-direct-browser-access': 'true',
           }
-        : {}),
+        : apiAuthHeaders()),
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
@@ -369,6 +437,8 @@ function heuristicDetection(size: { width: number; height: number }): DetectionR
 /* ---------- 总入口 ---------- */
 
 export interface DetectConfig {
+  minimaxKey?: string;
+  minimaxModel?: string;
   openrouterKey?: string;
   openrouterModel?: string;
   claudeKey?: string;
@@ -381,6 +451,17 @@ export async function detectCabinetsAndItems(
   cfg: DetectConfig
 ): Promise<DetectionResult> {
   const maxRepairRounds = normalizeRepairRounds(cfg.maxRepairRounds);
+  try {
+    return await detectWithMiniMax(
+      cfg.minimaxKey,
+      cfg.minimaxModel || DEFAULT_MINIMAX_MODEL,
+      blob,
+      maxRepairRounds
+    );
+  } catch (e) {
+    console.warn('MiniMax detect failed after repair, try next provider/fallback:', e);
+  }
+
   try {
     return await detectWithGemini(
       cfg.openrouterKey,

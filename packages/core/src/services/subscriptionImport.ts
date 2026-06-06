@@ -2,8 +2,49 @@ import { SUB_CATEGORIES, type SubCategory, type SubCycle, type SubscriptionSourc
 import { fileToBase64 } from '../utils/image';
 import { uid } from '../utils/id';
 import { extractSubscriptionActionPlan, type SubscriptionActionPlan } from './subscriptionActions';
+import { apiAuthHeaders, apiUrl, getUserApiKey } from './apiBase';
 
+export interface SubscriptionDraftFields {
+  name?: string;
+  planName?: string;
+  category?: SubCategory;
+  amount?: number;
+  cycle?: SubCycle;
+  cycleDays?: number;
+  nextDueAt?: string;
+  startedAt?: string;
+  paymentMethod?: string;
+  autoRenew?: boolean;
+  note?: string;
+  source?: SubscriptionSource;
+  confidence?: number;
+  evidenceText?: string;
+}
+
+const MINIMAX_API = 'https://api.minimaxi.com/v1/chat/completions';
 const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
+const DEFAULT_MINIMAX_MODEL = 'MiniMax-M3';
+const DEFAULT_OPENROUTER_MODEL = 'google/gemini-2.5-flash';
+
+type OpenAiProvider = 'minimax' | 'openrouter' | 'deepseek';
+
+function pickVisionProvider(explicitApiKey?: string): OpenAiProvider {
+  if (explicitApiKey || getUserApiKey('minimax')) return 'minimax';
+  if (getUserApiKey('openrouter')) return 'openrouter';
+  return 'minimax';
+}
+
+function providerUrl(provider: OpenAiProvider): string {
+  if (provider === 'minimax') return MINIMAX_API;
+  if (provider === 'deepseek') return 'https://api.deepseek.com/chat/completions';
+  return OPENROUTER_API;
+}
+
+function providerDefaultModel(provider: OpenAiProvider): string | undefined {
+  if (provider === 'minimax') return DEFAULT_MINIMAX_MODEL;
+  if (provider === 'openrouter') return DEFAULT_OPENROUTER_MODEL;
+  return undefined;
+}
 
 const CATEGORY_BY_NAME: Array<[RegExp, SubCategory]> = [
   [/chatgpt|cursor|notion|figma|github|vercel|icloud|dropbox|云|软件|工具|app|saas/i, 'software'],
@@ -29,6 +70,15 @@ function categoryFromText(text: string): SubCategory {
 
 function cycleFromText(text: string): SubCycle {
   return CYCLE_BY_TEXT.find(([re]) => re.test(text))?.[1] || 'monthly';
+}
+
+/** 公开给语音/搜索入口复用的轻量推断器 */
+export function inferSubCategory(text: string): SubCategory {
+  return categoryFromText(text);
+}
+
+export function inferSubCycle(text: string): SubCycle {
+  return cycleFromText(text);
 }
 
 function cleanCell(value: string | undefined): string {
@@ -145,7 +195,7 @@ function extractAmountFromText(text: string): number {
   const labelled = valueAfterLabel(text, ['续费金额', '扣款金额', '支付金额', '金额', '合计', '实付']);
   const amount = parseAmount(labelled || '');
   if (amount > 0) return amount;
-  const money = text.match(/[¥￥]\s*-?\d+(?:,\d{3})*(?:\.\d+)?|-?\d+(?:,\d{3})*(?:\.\d+)?\s*元/);
+  const money = text.match(/[¥￥]\s*-?\d+(?:,\d{3})*(?:\.\d+)?|-?\d+(?:,\d{3})*(?:\.\d+)?\s*(?:元|块钱|块)/);
   return money ? parseAmount(money[0]!) : 0;
 }
 
@@ -269,14 +319,16 @@ export async function recognizeSubscriptionBillImage(
 
 category 只能是 software/loan/utility/rent/membership/insurance/telecom/other；cycle 只能是 weekly/monthly/quarterly/yearly/custom；日期必须 yyyy-mm-dd。没有足够证据时不要创建。`;
 
-  const res = await fetch(options.apiKey ? OPENROUTER_API : '/api/ai/openrouter', {
+  const provider = pickVisionProvider(options.apiKey);
+  const effectiveKey = options.apiKey || getUserApiKey(provider) || undefined;
+  const res = await fetch(effectiveKey ? providerUrl(provider) : apiUrl(`/api/ai/${provider}`), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(options.apiKey ? { Authorization: `Bearer ${options.apiKey}` } : {}),
+      ...(effectiveKey ? { Authorization: `Bearer ${effectiveKey}` } : apiAuthHeaders()),
     },
     body: JSON.stringify({
-      model: options.model || 'google/gemini-2.5-flash',
+      model: options.model || providerDefaultModel(provider),
       messages: [
         {
           role: 'user',
@@ -286,7 +338,9 @@ category 只能是 software/loan/utility/rent/membership/insurance/telecom/other
           ],
         },
       ],
-      max_tokens: 2048,
+      ...(provider === 'minimax'
+        ? { max_completion_tokens: 2048, reasoning_split: true }
+        : { max_tokens: 2048 }),
       temperature: 0.2,
     }),
   });
@@ -297,4 +351,239 @@ category 只能是 software/loan/utility/rent/membership/insurance/telecom/other
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content || data.raw || '';
   return extractSubscriptionActionPlan(String(text));
+}
+
+
+/* ===================== 单条订阅：图片识别 ===================== */
+
+/**
+ * 从一张图片识别「单条」订阅信息，给「图片添加订阅」入口用。
+ * 图片可以是：App Store 应用截图、订阅管理页、扣款短信/邮件截图、账单。
+ * 返回结构化草稿字段（不是 action plan），便于直接灌进添加表单让用户确认。
+ */
+export async function recognizeSubscriptionFromImage(
+  blob: Blob,
+  options: { model?: string; apiKey?: string; signal?: AbortSignal } = {}
+): Promise<SubscriptionDraftFields | null> {
+  const base64 = await fileToBase64(blob);
+  const mediaType = blob.type || 'image/jpeg';
+  const prompt = `你是订阅识别助手。请看这张图片（可能是 App Store 应用页、订阅管理页、扣款短信/邮件、银行账单），识别出**一条**最主要的周期性订阅 / 会员 / 定期账单。
+
+只输出一个 JSON 代码块，不要多余文字：
+\`\`\`json
+{
+  "name": "服务/应用名（必填，如 Netflix、iCloud+、爱奇艺）",
+  "planName": "套餐名，如 高级版 / 家庭版（没有则省略）",
+  "category": "software|loan|utility|rent|membership|insurance|telecom|other",
+  "amount": 数字金额（人民币，没有则 0）,
+  "cycle": "weekly|monthly|quarterly|yearly|custom",
+  "nextDueAt": "yyyy-mm-dd（下次扣款日，不确定则省略）",
+  "paymentMethod": "支付方式，如 Apple Pay / 招行信用卡（没有则省略）",
+  "confidence": 0~1 的把握度,
+  "evidenceText": "图片里支撑判断的关键文字"
+}
+\`\`\`
+只识别一条最主要的订阅；金额识别不到时填 0；信息缺失的字段直接省略，不要编造。`;
+
+  const provider = pickVisionProvider(options.apiKey);
+  const effectiveKey = options.apiKey || getUserApiKey(provider) || undefined;
+  const res = await fetch(effectiveKey ? providerUrl(provider) : apiUrl(`/api/ai/${provider}`), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(effectiveKey ? { Authorization: `Bearer ${effectiveKey}` } : apiAuthHeaders()),
+    },
+    body: JSON.stringify({
+      model: options.model || providerDefaultModel(provider),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
+          ],
+        },
+      ],
+      ...(provider === 'minimax'
+        ? { max_completion_tokens: 1024, reasoning_split: true }
+        : { max_tokens: 1024 }),
+      temperature: 0.2,
+    }),
+    signal: options.signal,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`图片识别失败 (${res.status})：${err.slice(0, 160)}`);
+  }
+  const data = await res.json();
+  const text = String(data.choices?.[0]?.message?.content || data.raw || '');
+  return parseDraftJson(text, 'ai_vision');
+}
+
+function parseDraftJson(text: string, source: SubscriptionSource): SubscriptionDraftFields | null {
+  const match = text.match(/```(?:json)?\s*([\s\S]*?)```/i) || text.match(/(\{[\s\S]*\})/);
+  if (!match) return null;
+  try {
+    const raw = JSON.parse(match[1]!.trim());
+    const name = String(raw?.name || '').trim();
+    if (!name) return null;
+    const categoryOk = SUB_CATEGORIES.some((c) => c.id === raw?.category);
+    const cycleOk = ['weekly', 'monthly', 'quarterly', 'yearly', 'custom'].includes(raw?.cycle);
+    return {
+      name: name.slice(0, 80),
+      planName: raw?.planName ? String(raw.planName).slice(0, 80) : undefined,
+      category: categoryOk ? (raw.category as SubCategory) : categoryFromText(`${name} ${raw?.evidenceText || ''}`),
+      amount: parseAmount(String(raw?.amount ?? '')) || 0,
+      cycle: cycleOk ? (raw.cycle as SubCycle) : cycleFromText(`${name} ${raw?.evidenceText || ''}`),
+      nextDueAt: parseDate(String(raw?.nextDueAt || '')),
+      paymentMethod: raw?.paymentMethod ? String(raw.paymentMethod).slice(0, 80) : undefined,
+      source,
+      confidence: typeof raw?.confidence === 'number' ? Math.max(0, Math.min(1, raw.confidence)) : 0.75,
+      evidenceText: raw?.evidenceText ? String(raw.evidenceText).slice(0, 1200) : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/* ===================== 单条订阅：语音描述解析 ===================== */
+
+/**
+ * 把 iOS 实时语音转写出来的整句订阅描述，先做一轮本地规则解析（离线、零延迟），
+ * 抽出名称、金额、周期、日期、支付方式。识别不全时上层可再交给 LLM 补全。
+ *
+ * 例："我开了爱奇艺黄金会员，每个月 25 块，下个月 8 号扣费，用微信付的"
+ */
+export function buildVoiceSubscriptionDraft(transcript: string): SubscriptionDraftFields | null {
+  const text = transcript.trim();
+  if (!text) return null;
+
+  const amount = extractAmountFromText(text);
+  const cycle = cycleFromText(text);
+  const nextDueAt = parseDate(text) || parseSpokenRelativeDate(text);
+  const paymentMethod = extractSpokenPayment(text);
+  const name = extractSpokenName(text);
+
+  if (!name) return null;
+  return {
+    name,
+    category: categoryFromText(text),
+    amount,
+    cycle,
+    nextDueAt,
+    paymentMethod,
+    source: 'ai_text',
+    confidence: amount > 0 && nextDueAt ? 0.8 : 0.6,
+    evidenceText: text.slice(0, 600),
+  };
+}
+
+/** 从口语里抽订阅名：去掉「我开了/我订了/订阅了」等前缀和金额/周期描述 */
+function extractSpokenName(text: string): string | undefined {
+  const labelled = valueAfterLabel(text, ['订阅', '开通', '开了', '续费', '叫做', '名字是', '名称是', '服务是']);
+  let candidate = labelled || text;
+  candidate = candidate
+    .replace(/^(我|帮我|记一下|记录|这是)?\s*(开通了?|订阅了?|开了|订了|续费了?|买了?)\s*/g, '')
+    .split(/[，,。.；;\n]/)[0]!
+    .replace(/(每个?月|每周|每季度?|每年|月付|年付|包月|包年|月费|年费).*$/g, '')
+    .replace(/[¥￥]?\s*\d+(?:\.\d+)?\s*(块钱?|元|块)?.*$/g, '')
+    .replace(/(微信|支付宝|apple\s*pay|信用卡|储蓄卡|银行卡).*$/gi, '')
+    .replace(/会员$/g, '会员')
+    .trim();
+  return candidate ? candidate.slice(0, 60) : undefined;
+}
+
+const SPOKEN_PAY_MAP: Array<[RegExp, string]> = [
+  [/微信/, '微信'],
+  [/支付宝/, '支付宝'],
+  [/apple\s*pay|苹果支付/i, 'Apple Pay'],
+  [/招行|招商/i, '招商银行'],
+  [/(信用卡)/, '信用卡'],
+  [/(储蓄卡|借记卡)/, '储蓄卡'],
+];
+
+function extractSpokenPayment(text: string): string | undefined {
+  return SPOKEN_PAY_MAP.find(([re]) => re.test(text))?.[1];
+}
+
+/** 解析「下个月8号 / 这个月底 / 26号 / 每月15号」之类的口语日期 */
+function parseSpokenRelativeDate(text: string): string | undefined {
+  const now = new Date();
+  const dayMatch = text.match(/(?:每个?月|这个?月|下个?月)?\s*(\d{1,2})\s*[号日]/);
+  if (dayMatch) {
+    const day = Number(dayMatch[1]);
+    if (day >= 1 && day <= 31) {
+      let month = now.getMonth();
+      let year = now.getFullYear();
+      if (/下个?月/.test(text)) month += 1;
+      // 若是本月且日期已过，顺延到下月
+      else if (day < now.getDate() && !/下个?月/.test(text)) month += 1;
+      const d = new Date(year, month, day);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 语音描述交给 LLM 做结构化补全（本地规则没抽全时用）。
+ * 返回结构化草稿字段。
+ */
+export async function recognizeSubscriptionFromVoice(
+  transcript: string,
+  today: string,
+  options: { model?: string; apiKey?: string; signal?: AbortSignal } = {}
+): Promise<SubscriptionDraftFields | null> {
+  const text = transcript.trim();
+  if (!text) return null;
+  const prompt = `今天是 ${today}。下面是用户用语音口述的一条订阅信息，请抽取成结构化数据。
+
+只输出一个 JSON 代码块：
+\`\`\`json
+{
+  "name": "服务/应用名（必填）",
+  "planName": "套餐名（没有则省略）",
+  "category": "software|loan|utility|rent|membership|insurance|telecom|other",
+  "amount": 数字金额（人民币，识别不到填 0）,
+  "cycle": "weekly|monthly|quarterly|yearly|custom",
+  "nextDueAt": "yyyy-mm-dd（把『下个月8号』『这个月底』等相对说法换算成绝对日期；不确定则省略）",
+  "paymentMethod": "支付方式（没有则省略）",
+  "confidence": 0~1
+}
+\`\`\`
+口述内容：${text.slice(0, 600)}`;
+
+  const provider: OpenAiProvider = options.apiKey
+    ? 'minimax'
+    : getUserApiKey('minimax')
+      ? 'minimax'
+      : getUserApiKey('deepseek')
+        ? 'deepseek'
+        : getUserApiKey('openrouter')
+          ? 'openrouter'
+          : 'minimax';
+  const effectiveKey = options.apiKey || getUserApiKey(provider) || undefined;
+  const res = await fetch(effectiveKey ? providerUrl(provider) : apiUrl(`/api/ai/${provider}`), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(effectiveKey ? { Authorization: `Bearer ${effectiveKey}` } : apiAuthHeaders()),
+    },
+    body: JSON.stringify({
+      model: options.model || providerDefaultModel(provider),
+      messages: [{ role: 'user', content: prompt }],
+      ...(provider === 'minimax'
+        ? { max_completion_tokens: 512, reasoning_split: true }
+        : { max_tokens: 512 }),
+      temperature: 0.2,
+    }),
+    signal: options.signal,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`语音识别失败 (${res.status})：${err.slice(0, 160)}`);
+  }
+  const data = await res.json();
+  const out = String(data.choices?.[0]?.message?.content || data.raw || '');
+  return parseDraftJson(out, 'ai_text');
 }

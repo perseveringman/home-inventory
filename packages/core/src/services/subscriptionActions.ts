@@ -14,7 +14,8 @@ import {
 import type { Storage } from '../storage/types';
 import { uid } from '../utils/id';
 import { logAction } from './actionLog';
-import { advanceSubDue, subscriptionMonthlyCost } from './subscription';
+import { renewSubDue, subscriptionMonthlyCost } from './subscription';
+import { fetchIconAsDataUrl, searchAppStoreApps } from './appStore';
 
 type SubscriptionDraft = Partial<Omit<Subscription, 'id' | 'createdAt'>>;
 type SubscriptionPatch = Partial<Omit<Subscription, 'id' | 'createdAt'>>;
@@ -43,6 +44,20 @@ const CANCEL_DIFFICULTY_IDS = new Set<CancellationDifficulty>(['easy', 'medium',
 function cleanText(value: unknown, max = 120): string | undefined {
   const text = String(value ?? '').trim();
   return text ? text.slice(0, max) : undefined;
+}
+
+/** 接受 https URL 或 data: 内联图（限 256KB 以内的 base64 长度），其它一律丢弃 */
+function cleanIconUrl(value: unknown): string | undefined {
+  const text = String(value ?? '').trim();
+  if (!text) return undefined;
+  if (/^data:image\//i.test(text)) return text.length <= 350_000 ? text : undefined;
+  if (/^https:\/\//i.test(text)) return text.slice(0, 600);
+  return undefined;
+}
+
+function cleanAppStoreId(value: unknown): number | undefined {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 function cleanDate(value: unknown): string | undefined {
@@ -147,6 +162,8 @@ function sanitizePatch(input: any): SubscriptionPatch {
   const patch: SubscriptionPatch = {};
   const name = cleanText(input?.name, 80);
   const icon = cleanText(input?.icon, 4);
+  const iconUrl = cleanIconUrl(input?.iconUrl);
+  const appStoreId = cleanAppStoreId(input?.appStoreId);
   const category = cleanCategory(input?.category);
   const amount = cleanAmount(input?.amount);
   const currency = cleanText(input?.currency, 8);
@@ -179,6 +196,8 @@ function sanitizePatch(input: any): SubscriptionPatch {
 
   if (name) patch.name = name;
   if (icon) patch.icon = icon;
+  if (iconUrl) patch.iconUrl = iconUrl;
+  if (appStoreId != null) patch.appStoreId = appStoreId;
   if (category) patch.category = category;
   if (amount != null) patch.amount = amount;
   if (currency) patch.currency = currency;
@@ -220,6 +239,8 @@ function buildSubscription(draft: any): Subscription | null {
     id: uid(),
     name: patch.name,
     icon: patch.icon,
+    iconUrl: patch.iconUrl,
+    appStoreId: patch.appStoreId,
     category: patch.category || 'other',
     amount: patch.amount || 0,
     currency: patch.currency,
@@ -376,6 +397,20 @@ function appendPricePoint(sub: Subscription, patch: SubscriptionPatch, today: st
   ].slice(-40);
 }
 
+/** 给订阅就地补上 App Store 真实图标（拿不到则保持原样，不抛错） */
+async function enrichSubscriptionIcon(sub: Subscription): Promise<void> {
+  try {
+    const apps = await searchAppStoreApps(sub.name, { limit: 1 });
+    const app = apps[0];
+    if (!app) return;
+    sub.appStoreId = sub.appStoreId || app.trackId;
+    const inline = await fetchIconAsDataUrl(app.iconUrl).catch(() => null);
+    sub.iconUrl = inline || app.iconUrl;
+  } catch {
+    // 无网络或被限流时静默跳过
+  }
+}
+
 export async function applySubscriptionActionPlan(
   storage: Storage,
   plan: SubscriptionActionPlan
@@ -387,6 +422,7 @@ export async function applySubscriptionActionPlan(
     if (action.type === 'createSubscription') {
       const sub = buildSubscription(action.draft);
       if (!sub) continue;
+      if (!sub.iconUrl) await enrichSubscriptionIcon(sub);
       await storage.put('subscriptions', sub);
       applied += 1;
       continue;
@@ -423,7 +459,7 @@ export async function applySubscriptionActionPlan(
     }
 
     if (action.type === 'markPaid') {
-      const advanced = advanceSubDue(sub);
+      const advanced = renewSubDue(sub);
       await storage.put('subscriptions', { ...advanced, lastPaidAt: today });
       applied += 1;
       continue;

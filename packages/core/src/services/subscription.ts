@@ -27,6 +27,22 @@ export function advanceSubDue(sub: Subscription): Subscription {
   return { ...sub, nextDueAt: d.toISOString().slice(0, 10) };
 }
 
+/** 用户确认本期已付款/已续期时，直接推进到下一期。 */
+export function renewSubDue(sub: Subscription): Subscription {
+  if (!sub.nextDueAt) return sub;
+  const days = subscriptionCycleDays(sub);
+  let d = new Date(sub.nextDueAt + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return sub;
+  d = new Date(d.getTime() + days * 24 * 3600 * 1000);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  while (d.getTime() <= today.getTime()) {
+    d = new Date(d.getTime() + days * 24 * 3600 * 1000);
+  }
+  return { ...sub, nextDueAt: d.toISOString().slice(0, 10) };
+}
+
 export type SubscriptionInsightTone = 'critical' | 'warn' | 'info' | 'good';
 
 export interface SubscriptionInsight {
@@ -161,6 +177,7 @@ export function buildSubscriptionInsights(
   }
 
   const dueSoon = active
+    .filter((sub) => sub.autoRenew === false)
     .map((sub) => ({ sub, days: daysUntil(sub.nextDueAt, now) }))
     .filter((item): item is { sub: Subscription; days: number } => item.days != null && item.days <= 7)
     .sort((a, b) => a.days - b.days);
@@ -179,7 +196,7 @@ export function buildSubscriptionInsights(
     insights.push({
       id: 'due-soon',
       tone: 'warn',
-      title: `7 天内有 ${dueSoon.length} 笔扣款`,
+      title: `7 天内有 ${dueSoon.length} 项订阅到期`,
       detail: dueSoon
         .slice(0, 3)
         .map((item) => `${item.sub.name}${item.days === 0 ? '今天' : `${item.days} 天后`}`)
@@ -188,7 +205,7 @@ export function buildSubscriptionInsights(
   }
 
   const yearlySoon = active
-    .filter((sub) => sub.cycle === 'yearly')
+    .filter((sub) => sub.autoRenew === false && sub.cycle === 'yearly')
     .map((sub) => ({ sub, days: daysUntil(sub.nextDueAt, now) }))
     .filter((item): item is { sub: Subscription; days: number } => item.days != null && item.days <= 45)
     .sort((a, b) => a.days - b.days);

@@ -4,13 +4,14 @@
 import type { Storage, StoreName, StoreSchema } from './types';
 
 const DB_NAME = 'home-inventory-v2';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORES: StoreName[] = [
   'rooms',
   'photos',
   'cabinets',
   'items',
   'subscriptions',
+  'recognitionTasks',
   'scanSessions',
   'labels',
   'actionLogs',
@@ -35,6 +36,11 @@ function openDB(): Promise<IDBDatabase> {
             store.createIndex('cabinetId', 'cabinetId', { unique: false });
           }
           if (name === 'scanSessions') {
+            store.createIndex('roomId', 'roomId', { unique: false });
+            store.createIndex('photoId', 'photoId', { unique: false });
+            store.createIndex('status', 'status', { unique: false });
+          }
+          if (name === 'recognitionTasks') {
             store.createIndex('roomId', 'roomId', { unique: false });
             store.createIndex('photoId', 'photoId', { unique: false });
             store.createIndex('status', 'status', { unique: false });

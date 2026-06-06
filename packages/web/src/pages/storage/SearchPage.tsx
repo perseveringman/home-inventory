@@ -4,6 +4,7 @@ import { semanticSearchInventory } from '@home-inventory/core';
 import { useStore } from '../../stores/useStore';
 import { Header } from '../../components/Header';
 import { BlobImage } from '../../components/BlobImage';
+import { ItemThumb } from '../../components/ItemThumb';
 import { openModal } from '../../components/Modal';
 import ItemDialog from '../modals/ItemDialog';
 import { PinIcon } from '../../components/PinIcon';
@@ -72,11 +73,7 @@ export default function SearchPage() {
                         )}
                       </>
                     ) : (
-                      <BlobImage
-                        blob={result.item.image || null}
-                        emoji={result.item.aiEmoji || 'box'}
-                        className="w-full h-full object-cover"
-                      />
+                      <ItemThumb item={result.item} className="w-full h-full" />
                     )}
                   </div>
                   <div className="flex-1 min-w-0">

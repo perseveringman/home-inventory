@@ -1,0 +1,17 @@
+# Docker build context 忽略列表（home-inventory 后端镜像用）
+.git
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/.vite
+**/coverage
+packages/web/ios
+packages/web/android
+.DS_Store
+*.log
+.env
+.env.local
+docs
+legacy

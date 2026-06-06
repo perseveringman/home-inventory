@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { GLOBAL_ROOM_ID, PRESET_TAGS, expiryInfo, type Item } from '@home-inventory/core';
-import { BlobImage } from '../../components/BlobImage';
+import { ItemThumb } from '../../components/ItemThumb';
 import { EmptyState } from '../../components/EmptyState';
 import { Header } from '../../components/Header';
 import { openModal } from '../../components/Modal';
@@ -92,7 +92,7 @@ export default function ItemsPage() {
                               const info = expiryInfo(item.expiry);
                               return (
                                 <button key={item.id} onClick={() => openModal((close) => <ItemDialog item={item} onClose={close} />)} className="relative text-left bg-slate-50 rounded-xl p-2 hover:bg-slate-100">
-                                  <BlobImage blob={item.image || null} emoji={item.aiEmoji || 'box'} className="w-full aspect-square rounded-lg object-cover mb-2" />
+                                  <ItemThumb item={item} className="w-full aspect-square rounded-lg mb-2" />
                                   <div className="font-medium text-sm truncate">{item.name}</div>
                                   <div className="text-xs text-ink-500">× {item.qty}</div>
                                   {info && <span className={`inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded border ${info.cls}`}>{info.label}</span>}

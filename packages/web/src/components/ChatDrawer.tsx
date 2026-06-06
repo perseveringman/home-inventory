@@ -1,20 +1,25 @@
-import { useMemo, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   buildChatSystemPrompt,
   applyInventoryActionPlan,
   applySubscriptionActionPlan,
   describeInventoryAction,
   extractInventoryActionPlan,
+  extractNavigateActions,
   extractSubscriptionActionPlan,
+  getItemLists,
   previewSubscriptionAction,
   extractRenameSuggestions,
   stripInventoryActionBlock,
+  stripNavigateBlock,
   stripSubscriptionActionBlock,
   streamChatWithAI,
   stripRenameBlock,
   type ChatMessage,
   type InventoryActionPlan,
+  type ItemList,
+  type NavigateAction,
   type RenameSuggestion,
   type SubscriptionActionPlan,
 } from '@home-inventory/core';
@@ -90,11 +95,14 @@ function MessageBody({ text }: { text: string }) {
 }
 
 function cleanAssistantText(text: string): string {
-  return stripSubscriptionActionBlock(stripInventoryActionBlock(stripRenameBlock(text)));
+  return stripNavigateBlock(
+    stripSubscriptionActionBlock(stripInventoryActionBlock(stripRenameBlock(text)))
+  );
 }
 
 export function ChatDrawer({ open, onClose }: Props) {
   const location = useLocation();
+  const navigate = useNavigate();
   const rooms = useStore((s) => s.rooms);
   const cabinets = useStore((s) => s.cabinets);
   const items = useStore((s) => s.items);
@@ -107,7 +115,15 @@ export function ChatDrawer({ open, onClose }: Props) {
   const [renames, setRenames] = useState<RenameSuggestion[]>([]);
   const [actionPlan, setActionPlan] = useState<InventoryActionPlan | null>(null);
   const [subscriptionPlan, setSubscriptionPlan] = useState<SubscriptionActionPlan | null>(null);
+  const [navActions, setNavActions] = useState<NavigateAction[]>([]);
+  const [itemLists, setItemLists] = useState<ItemList[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+
+  // 抽屉打开时拉取最新清单（清单数据存在 config，不在 zustand store）
+  useEffect(() => {
+    if (!open) return;
+    getItemLists(getStorage()).then(setItemLists).catch(() => {});
+  }, [open]);
 
   // Derive current room id from path (e.g. /room/abc, /photo/xyz handled in caller).
   const currentRoomId = useMemo(() => {
@@ -121,8 +137,8 @@ export function ChatDrawer({ open, onClose }: Props) {
         currentPath: location.pathname,
         currentRoomId,
         today: new Date().toISOString().slice(0, 10),
-      }),
-    [rooms, cabinets, items, subscriptions, location.pathname, currentRoomId]
+      }, itemLists),
+    [rooms, cabinets, items, subscriptions, location.pathname, currentRoomId, itemLists]
   );
 
   if (!open) return null;
@@ -136,6 +152,7 @@ export function ChatDrawer({ open, onClose }: Props) {
     setRenames([]);
     setActionPlan(null);
     setSubscriptionPlan(null);
+    setNavActions([]);
     setStreaming(true);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -148,6 +165,7 @@ export function ChatDrawer({ open, onClose }: Props) {
           setRenames(extractRenameSuggestions(current));
           setActionPlan(extractInventoryActionPlan(current));
           setSubscriptionPlan(extractSubscriptionActionPlan(current));
+          setNavActions(extractNavigateActions(current));
         },
         controller.signal
       );
@@ -155,6 +173,7 @@ export function ChatDrawer({ open, onClose }: Props) {
       setRenames(extractRenameSuggestions(full));
       setActionPlan(extractInventoryActionPlan(full));
       setSubscriptionPlan(extractSubscriptionActionPlan(full));
+      setNavActions(extractNavigateActions(full));
     } catch (err: any) {
       if (err?.name !== 'AbortError') toast('AI 对话失败：' + (err?.message || 'unknown'), 3000);
     } finally {
@@ -197,6 +216,13 @@ export function ChatDrawer({ open, onClose }: Props) {
     } catch (err: any) {
       toast('应用失败：' + (err?.message || 'unknown'), 3000);
     }
+  };
+
+  const goNavigate = (action: NavigateAction) => {
+    navigate(action.path);
+    setNavActions([]);
+    abortRef.current?.abort();
+    onClose();
   };
 
   return (
@@ -338,6 +364,23 @@ export function ChatDrawer({ open, onClose }: Props) {
                       </span>
                     </span>
                   </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {navActions.length > 0 && (
+            <div className="bg-paper-200 border border-ink-200/60 rounded-xl p-3 space-y-2">
+              <div className="text-[12.5px] font-semibold text-ink-700">建议跳转</div>
+              <div className="flex flex-wrap gap-2">
+                {navActions.map((a) => (
+                  <button
+                    key={a.path}
+                    onClick={() => goNavigate(a)}
+                    className="px-3 py-1.5 rounded-full bg-brand-500 text-white text-[12px] inline-flex items-center gap-1.5 hover:bg-brand-600"
+                  >
+                    <Glyph name="arrow-right" size={12} strokeWidth={2.2} />
+                    {a.reason || a.path}
+                  </button>
                 ))}
               </div>
             </div>

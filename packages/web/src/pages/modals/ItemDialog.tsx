@@ -6,22 +6,28 @@ import {
   ensureGlobalLooseCabinet,
   ensureLooseCabinet,
   expiryInfo,
-  generateItemThumb,
+  generateSemanticThumb,
   suggestItemDraft,
+  suggestItemSemantic,
   uid,
   type Item,
   type Season,
 } from '@home-inventory/core';
 import { BlobImage } from '../../components/BlobImage';
+import { ItemThumb } from '../../components/ItemThumb';
 import { toast } from '../../components/Toast';
 import { getStorage, useStore } from '../../stores/useStore';
 import { PinIcon } from '../../components/PinIcon';
 import { Glyph } from '../../components/Glyph';
+import { pickImage } from '../../lib/nativeImage';
 
 interface Props {
   item?: Item;
   defaultCabinetId?: string;
   defaultRoomId?: string;
+  defaultName?: string;
+  defaultNote?: string;
+  defaultTags?: string[];
   onClose: () => void;
 }
 
@@ -33,7 +39,15 @@ const SEASONS: Array<{ id: Season; label: string }> = [
   { id: 'winter', label: '冬' },
 ];
 
-export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onClose }: Props) {
+export default function ItemDialog({
+  item,
+  defaultCabinetId,
+  defaultRoomId,
+  defaultName = '',
+  defaultNote = '',
+  defaultTags = [],
+  onClose,
+}: Props) {
   const put = useStore((s) => s.put);
   const del = useStore((s) => s.del);
   const cabinets = useStore((s) => s.cabinets);
@@ -49,15 +63,19 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
       ? '__room_loose__'
       : item?.cabinetId || defaultCabinetId || (initialRoomId === GLOBAL_ROOM_ID ? '__global_loose__' : '__room_loose__');
 
-  const [name, setName] = useState(item?.name || '');
+  const [name, setName] = useState(item?.name || defaultName);
   const [qty, setQty] = useState(item?.qty ?? 1);
-  const [note, setNote] = useState(item?.note || '');
+  const [note, setNote] = useState(item?.note || defaultNote);
   const [expiry, setExpiry] = useState(item?.expiry || '');
-  const [tags, setTags] = useState<string[]>(item?.tags || []);
+  const [tags, setTags] = useState<string[]>(item?.tags || defaultTags);
   const [customTag, setCustomTag] = useState('');
   const [roomId, setRoomId] = useState(initialRoomId);
   const [cabinetId, setCabinetId] = useState(initialCabinetChoice);
   const [blob, setBlob] = useState<Blob | null>(item?.image || null);
+  /** 用户是否在本次编辑里主动改过图片（拍照 / 选图 / 移除 / AI 配图）。
+   *  保存时，如果没有 dirty 且原 item 已有图 → 保持原图不动，避免被默认图覆盖。 */
+  const [imageDirty, setImageDirty] = useState(false);
+  const [generatingThumb, setGeneratingThumb] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [openedAt, setOpenedAt] = useState(item?.openedAt || '');
   const [openedShelfDays, setOpenedShelfDays] = useState(item?.openedShelfDays ? String(item.openedShelfDays) : '');
@@ -90,12 +108,47 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
     setCustomTag('');
   };
 
-  const pickPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    const { blob: compressed } = await compressImage(file, 800, 0.78);
-    setBlob(compressed);
+  const pickPhoto = async (source: 'camera' | 'gallery') => {
+    try {
+      const file = await pickImage({ source });
+      if (!file) return;
+      const { blob: compressed } = await compressImage(file, 800, 0.78);
+      setBlob(compressed);
+      setImageDirty(true);
+    } catch (err: any) {
+      console.error(err);
+      toast('打开相机失败：' + (err?.message || 'unknown'));
+    }
+  };
+
+  const removePhoto = () => {
+    setBlob(null);
+    setImageDirty(true);
+  };
+
+  const aiGenerateThumb = async () => {
+    if (generatingThumb) return;
+    if (!name.trim()) {
+      toast('请先填写物品名称');
+      return;
+    }
+    setGeneratingThumb(true);
+    try {
+      const guess = await suggestItemSemantic(getStorage(), {
+        name: name.trim(),
+        tags,
+        note,
+      });
+      const thumb = await generateSemanticThumb(guess.emoji, name.trim(), guess.hue);
+      setBlob(thumb);
+      setImageDirty(true);
+      toast(guess.source === 'ai' ? `AI 配图：${guess.emoji}` : `本地配图：${guess.emoji}`);
+    } catch (err: any) {
+      console.error(err);
+      toast('AI 配图失败：' + (err?.message || 'unknown'));
+    } finally {
+      setGeneratingThumb(false);
+    }
   };
 
   const fillAISuggestion = async () => {
@@ -266,7 +319,16 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
       return;
     }
     if (cabinet.type === 'loose' || cabinet.type === 'loose-global') await put('cabinets', cabinet);
-    const image = blob || item?.image || (await generateItemThumb(trimmedName, item?.aiEmoji || 'box'));
+    // 图片决策：
+    // 1) 用户在本次编辑里改过 → 用 blob（可能为 null，表示主动移除）
+    // 2) 否则保留原 item 的图（编辑时不要被覆盖成默认图）
+    // 3) 全新物品且没有图 → 不再生成丑的默认贴纸图，留空让 ItemThumb 显示语义图
+    let image: Blob | undefined;
+    if (imageDirty) {
+      image = blob || undefined;
+    } else {
+      image = item?.image || blob || undefined;
+    }
     const next: Item = {
       id: item?.id || uid(),
       cabinetId: cabinet.id,
@@ -311,102 +373,182 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
   };
 
   return (
-    <div className="p-5">
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <div className="flex items-center gap-2 min-w-0">
-          <h3 className="text-lg font-semibold shrink-0">{item ? '编辑物品' : '新增物品'}</h3>
+    <div className="item-dialog">
+      <div className="item-dialog__grabber" aria-hidden="true" />
+
+      <div className="item-dialog__header">
+        <div className="min-w-0">
+          <div className="item-dialog__eyebrow">{item ? '物品档案' : '新物品'}</div>
+          <h3>{item ? '编辑物品' : '新增物品'}</h3>
+          <p>{name.trim() || item?.name || '先填名称，再补照片、位置和保质期'}</p>
+        </div>
+        <div className="item-dialog__header-actions">
           {item?.status === 'pending' && (
             <button
+              type="button"
               onClick={fillAISuggestion}
               disabled={suggesting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-brand-50 text-brand-700 text-xs font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+              className="item-dialog__ai-button"
               aria-label="AI 建议"
             >
               <PinIcon name="spark" size={18} tile={false} />
-              <span className="whitespace-nowrap">{suggesting ? '思考中…' : 'AI 建议'}</span>
+              <span>{suggesting ? '思考中' : 'AI 建议'}</span>
             </button>
           )}
+          <button type="button" onClick={onClose} className="item-dialog__icon-button" aria-label="关闭">
+            <Glyph name="close" size={18} strokeWidth={1.8} />
+          </button>
         </div>
-        <button onClick={onClose} className="text-ink-500 hover:text-ink-900 text-xl">×</button>
       </div>
 
-      <div className="space-y-3">
-        <div>
-          <label className="block text-sm font-medium mb-1">名称</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2" placeholder="例如：维生素 C" />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium mb-1">数量</label>
-            <input type="number" value={qty} onChange={(e) => setQty(+e.target.value || 1)} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
+      <div className="item-dialog__body">
+        <section className="item-dialog__section">
+          <div className="item-dialog__section-heading">
+            <span>基础信息</span>
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">保质期</label>
-            <div className="flex gap-1">
-              <input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} className="flex-1 min-w-0 border border-slate-200 rounded-lg px-3 py-2" />
-              {expiry && <button onClick={() => setExpiry('')} className="px-2 rounded-lg bg-slate-100 text-xs">清除</button>}
-            </div>
-            {expiryPreview && <span className={`inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded border ${expiryPreview.cls}`}>{expiryPreview.label}</span>}
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium mb-1">所在位置</label>
-          <div className="grid grid-cols-2 gap-2">
-            <select
-              value={roomId}
-              onChange={(e) => {
-                const next = e.target.value;
-                setRoomId(next);
-                setCabinetId(next === GLOBAL_ROOM_ID ? '__global_loose__' : '__room_loose__');
-              }}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 bg-white"
-            >
-              {rooms.map((room) => (
-                <option key={room.id} value={room.id}>{room.name}</option>
-              ))}
-              <option value={GLOBAL_ROOM_ID}>全屋自由区</option>
-            </select>
-            <select value={cabinetId} onChange={(e) => setCabinetId(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2 bg-white">
-              {roomId === GLOBAL_ROOM_ID ? (
-                <option value="__global_loose__">全屋自由区</option>
+          <div className="item-dialog__hero-row">
+            <div className="item-dialog__thumb">
+              {blob ? (
+                <BlobImage blob={blob} className="h-full w-full object-cover" />
               ) : (
-                <>
-                  {roomCabinets.map((cabinet) => (
-                    <option key={cabinet.id} value={cabinet.id}>{cabinet.name}</option>
-                  ))}
-                  <option value="__room_loose__">此房间自由区</option>
-                </>
+                <ItemThumb
+                  item={{ name: name || item?.name || '', tags, aiEmoji: item?.aiEmoji, image: undefined }}
+                  className="h-full w-full"
+                  preferBlob={false}
+                />
               )}
-            </select>
+            </div>
+            <label className="item-dialog__field item-dialog__field--grow">
+              <span>名称</span>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="item-dialog__input item-dialog__input--title"
+                placeholder="例如：维生素 C"
+              />
+            </label>
           </div>
-        </div>
 
-        <div>
-          <label className="block text-sm font-medium mb-1">备注</label>
-          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className="w-full border border-slate-200 rounded-lg px-3 py-2" placeholder="选填" />
-        </div>
+          <div className="item-dialog__grid item-dialog__grid--quantity">
+            <label className="item-dialog__field">
+              <span>数量</span>
+              <input
+                type="number"
+                value={qty}
+                onChange={(e) => setQty(+e.target.value || 1)}
+                className="item-dialog__input"
+                inputMode="numeric"
+              />
+            </label>
+            <label className="item-dialog__field">
+              <span className="item-dialog__label-row">
+                保质期
+                {expiryPreview && <em className={`item-dialog__date-badge ${expiryPreview.cls}`}>{expiryPreview.label}</em>}
+              </span>
+              <div className="item-dialog__inline-control">
+                <input
+                  type="date"
+                  value={expiry}
+                  onChange={(e) => setExpiry(e.target.value)}
+                  className="item-dialog__input"
+                />
+                {expiry && (
+                  <button type="button" onClick={() => setExpiry('')} className="item-dialog__mini-button">
+                    清除
+                  </button>
+                )}
+              </div>
+            </label>
+          </div>
+        </section>
 
-        <div>
-          <label className="text-sm font-medium mb-1 inline-flex items-center gap-2"><PinIcon name="tag" size={26} tile={false} />标签</label>
-          <div className="flex flex-wrap gap-1.5 mb-2">
+        <section className="item-dialog__section">
+          <div className="item-dialog__section-heading">
+            <span>位置</span>
+          </div>
+          <div className="item-dialog__grid">
+            <label className="item-dialog__field">
+              <span>房间</span>
+              <select
+                value={roomId}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setRoomId(next);
+                  setCabinetId(next === GLOBAL_ROOM_ID ? '__global_loose__' : '__room_loose__');
+                }}
+                className="item-dialog__input"
+              >
+                {rooms.map((room) => (
+                  <option key={room.id} value={room.id}>{room.name}</option>
+                ))}
+                <option value={GLOBAL_ROOM_ID}>全屋自由区</option>
+              </select>
+            </label>
+            <label className="item-dialog__field">
+              <span>收纳处</span>
+              <select value={cabinetId} onChange={(e) => setCabinetId(e.target.value)} className="item-dialog__input">
+                {roomId === GLOBAL_ROOM_ID ? (
+                  <option value="__global_loose__">全屋自由区</option>
+                ) : (
+                  <>
+                    {roomCabinets.map((cabinet) => (
+                      <option key={cabinet.id} value={cabinet.id}>{cabinet.name}</option>
+                    ))}
+                    <option value="__room_loose__">此房间自由区</option>
+                  </>
+                )}
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section className="item-dialog__section">
+          <div className="item-dialog__section-heading">
+            <span>备注</span>
+          </div>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={3}
+            className="item-dialog__input item-dialog__textarea"
+            placeholder="选填：规格、放置细节、使用提醒"
+          />
+        </section>
+
+        <section className="item-dialog__section">
+          <div className="item-dialog__section-heading">
+            <span>标签</span>
+            <PinIcon name="tag" size={22} tile={false} />
+          </div>
+          <div className="item-dialog__chips" aria-label="预设标签">
             {PRESET_TAGS.map((tag) => (
-              <button key={tag.name} onClick={() => toggleTag(tag.name)} className={`chip text-xs ${tags.includes(tag.name) ? '!bg-brand-500 !text-white' : '!bg-slate-100 !text-ink-700'}`}>
+              <button
+                key={tag.name}
+                type="button"
+                onClick={() => toggleTag(tag.name)}
+                className={`item-dialog__chip ${tags.includes(tag.name) ? 'is-selected' : ''}`}
+              >
                 {tag.name}
               </button>
             ))}
           </div>
           {tags.filter((tag) => !PRESET_TAGS.find((preset) => preset.name === tag)).length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-2">
+            <div className="item-dialog__chips item-dialog__chips--selected" aria-label="自定义标签">
               {tags
                 .filter((tag) => !PRESET_TAGS.find((preset) => preset.name === tag))
                 .map((tag) => (
-                  <button key={tag} onClick={() => toggleTag(tag)} className="chip !bg-brand-500 !text-white">{tag} ×</button>
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => toggleTag(tag)}
+                    className="item-dialog__chip is-selected"
+                  >
+                    {tag} ×
+                  </button>
                 ))}
             </div>
           )}
-          <div className="flex gap-1">
+          <div className="item-dialog__tag-row">
             <input
               value={customTag}
               onChange={(e) => setCustomTag(e.target.value)}
@@ -417,112 +559,137 @@ export default function ItemDialog({ item, defaultCabinetId, defaultRoomId, onCl
                 }
               }}
               placeholder="自定义标签"
-              className="flex-1 border border-slate-200 rounded-lg px-2 py-1 text-sm"
+              className="item-dialog__input"
             />
-            <button onClick={addCustomTag} className="px-3 py-1 bg-slate-100 rounded-lg text-sm" aria-label="添加标签"><Glyph name="plus" size={15} strokeWidth={1.8} /></button>
+            <button type="button" onClick={addCustomTag} className="item-dialog__icon-button" aria-label="添加标签">
+              <Glyph name="plus" size={18} strokeWidth={1.8} />
+            </button>
           </div>
-        </div>
+        </section>
 
-        <div>
-          <label className="block text-sm font-medium mb-1">图片</label>
-          <div className="flex items-center gap-3">
-            {blob && <BlobImage blob={blob} className="w-16 h-16 object-cover rounded-lg border border-slate-200" />}
-            <label className="cursor-pointer px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm">
-              选择图片
-              <input type="file" accept="image/*" hidden onChange={pickPhoto} />
-            </label>
-            <label className="cursor-pointer px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm">
-              拍照
-              <input type="file" accept="image/*" capture="environment" hidden onChange={pickPhoto} />
-            </label>
-            {blob && <button onClick={() => setBlob(null)} className="text-sm text-red-500 hover:underline">移除</button>}
+        <section className="item-dialog__section">
+          <div className="item-dialog__section-heading">
+            <span>图片</span>
+            <small>{blob ? '已使用自定义图片' : '当前显示语义图标'}</small>
           </div>
-        </div>
+          <div className="item-dialog__photo-actions">
+            <button type="button" onClick={() => pickPhoto('gallery')} className="item-dialog__action-pill">
+              <Glyph name="image" size={17} />
+              选图
+            </button>
+            <button type="button" onClick={() => pickPhoto('camera')} className="item-dialog__action-pill">
+              <Glyph name="camera" size={17} />
+              拍照
+            </button>
+            <button
+              type="button"
+              onClick={aiGenerateThumb}
+              disabled={generatingThumb}
+              className="item-dialog__action-pill item-dialog__action-pill--accent"
+            >
+              <PinIcon name="spark" size={16} tile={false} />
+              {generatingThumb ? '配图中' : 'AI 配图'}
+            </button>
+            {blob && (
+              <button type="button" onClick={removePhoto} className="item-dialog__action-pill item-dialog__action-pill--danger">
+                移除
+              </button>
+            )}
+          </div>
+          {!blob && <p className="item-dialog__hint">没有图片时，会按物品名称自动生成识别度更高的缩略图。</p>}
+        </section>
 
         {sourcePhoto && item?.aiRect && (
-          <details className="rounded-xl bg-slate-50 p-3">
-            <summary className="cursor-pointer text-sm text-brand-600">来源照片与 AI 框选</summary>
-            <div className="relative mt-3 bg-black rounded-xl overflow-hidden">
-              <BlobImage blob={sourcePhoto.blob} className="w-full max-h-64 object-contain" />
+          <details className="item-dialog__details">
+            <summary>来源照片与 AI 框选</summary>
+            <div className="item-dialog__source-photo">
+              <BlobImage blob={sourcePhoto.blob} className="h-full max-h-64 w-full object-contain" />
               <div
-                className="absolute border-2 border-rose-400 bg-rose-400/20 rounded"
+                className="absolute rounded border-2 border-rose-400 bg-rose-400/20"
                 style={{ left: `${item.aiRect.x * 100}%`, top: `${item.aiRect.y * 100}%`, width: `${item.aiRect.w * 100}%`, height: `${item.aiRect.h * 100}%` }}
               />
             </div>
           </details>
         )}
 
-        <details open={showMore}>
+        <details open={showMore} className="item-dialog__details">
           <summary
-            className="cursor-pointer text-sm text-brand-600 py-1"
             onClick={(e) => {
               e.preventDefault();
               setShowMore(!showMore);
             }}
           >
-            更多属性（开封期 / 保修 / 库存 / 资产档案）
+            更多属性
+            <span>开封期 / 保修 / 库存 / 资产档案</span>
           </summary>
           {showMore && (
-            <div className="grid grid-cols-2 gap-3 mt-3 p-3 bg-slate-50 rounded-lg">
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">开封日期</label>
-                <input type="date" value={openedAt} onChange={(e) => setOpenedAt(e.target.value)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">开封后可用天数</label>
-                <input type="number" value={openedShelfDays} onChange={(e) => setOpenedShelfDays(e.target.value)} placeholder="如 90" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">购买日期</label>
-                <input type="date" value={purchasedAt} onChange={(e) => setPurchasedAt(e.target.value)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">保修月数</label>
-                <input type="number" value={warrantyMonths} onChange={(e) => setWarrantyMonths(e.target.value)} placeholder="如 12" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">库存下限</label>
-                <input type="number" value={minStock} onChange={(e) => setMinStock(e.target.value)} placeholder="低于则提醒" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">所属季节</label>
-                <select value={season} onChange={(e) => setSeason(e.target.value as Season)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+            <div className="item-dialog__more-grid">
+              <label className="item-dialog__field">
+                <span>开封日期</span>
+                <input type="date" value={openedAt} onChange={(e) => setOpenedAt(e.target.value)} className="item-dialog__input" />
+              </label>
+              <label className="item-dialog__field">
+                <span>开封后可用天数</span>
+                <input type="number" value={openedShelfDays} onChange={(e) => setOpenedShelfDays(e.target.value)} placeholder="如 90" className="item-dialog__input" inputMode="numeric" />
+              </label>
+              <label className="item-dialog__field">
+                <span>购买日期</span>
+                <input type="date" value={purchasedAt} onChange={(e) => setPurchasedAt(e.target.value)} className="item-dialog__input" />
+              </label>
+              <label className="item-dialog__field">
+                <span>保修月数</span>
+                <input type="number" value={warrantyMonths} onChange={(e) => setWarrantyMonths(e.target.value)} placeholder="如 12" className="item-dialog__input" inputMode="numeric" />
+              </label>
+              <label className="item-dialog__field">
+                <span>库存下限</span>
+                <input type="number" value={minStock} onChange={(e) => setMinStock(e.target.value)} placeholder="低于则提醒" className="item-dialog__input" inputMode="numeric" />
+              </label>
+              <label className="item-dialog__field">
+                <span>所属季节</span>
+                <select value={season} onChange={(e) => setSeason(e.target.value as Season)} className="item-dialog__input">
                   {SEASONS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
-              </div>
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">品牌</label>
-                <input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="如 Apple" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">型号</label>
-                <input value={modelNumber} onChange={(e) => setModelNumber(e.target.value)} placeholder="Model" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">序列号</label>
-                <input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="Serial" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-ink-500 mb-1">购买价</label>
-                <input type="number" value={purchasePrice} onChange={(e) => setPurchasePrice(e.target.value)} placeholder="金额" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div className="col-span-2">
-                <label className="block text-xs text-ink-500 mb-1">说明书链接</label>
-                <input value={manualUrl} onChange={(e) => setManualUrl(e.target.value)} placeholder="https://..." className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
-              <div className="col-span-2">
-                <label className="block text-xs text-ink-500 mb-1">收据 / 资产备注</label>
-                <textarea value={receiptNote} onChange={(e) => setReceiptNote(e.target.value)} rows={2} placeholder="小票位置、铭牌照片、保险备注等" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-              </div>
+              </label>
+              <label className="item-dialog__field">
+                <span>品牌</span>
+                <input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="如 Apple" className="item-dialog__input" />
+              </label>
+              <label className="item-dialog__field">
+                <span>型号</span>
+                <input value={modelNumber} onChange={(e) => setModelNumber(e.target.value)} placeholder="Model" className="item-dialog__input" />
+              </label>
+              <label className="item-dialog__field">
+                <span>序列号</span>
+                <input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="Serial" className="item-dialog__input" />
+              </label>
+              <label className="item-dialog__field">
+                <span>购买价</span>
+                <input type="number" value={purchasePrice} onChange={(e) => setPurchasePrice(e.target.value)} placeholder="金额" className="item-dialog__input" inputMode="decimal" />
+              </label>
+              <label className="item-dialog__field item-dialog__field--span">
+                <span>说明书链接</span>
+                <input value={manualUrl} onChange={(e) => setManualUrl(e.target.value)} placeholder="https://..." className="item-dialog__input" />
+              </label>
+              <label className="item-dialog__field item-dialog__field--span">
+                <span>收据 / 资产备注</span>
+                <textarea value={receiptNote} onChange={(e) => setReceiptNote(e.target.value)} rows={2} placeholder="小票位置、铭牌照片、保险备注等" className="item-dialog__input item-dialog__textarea" />
+              </label>
             </div>
           )}
         </details>
       </div>
 
-      <div className="flex gap-2 mt-5">
-        {item && <button onClick={remove} className="px-4 py-2.5 rounded-lg border border-red-200 text-red-600">删除</button>}
-        <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-slate-200 text-ink-700">取消</button>
-        <button onClick={save} className="flex-1 py-2.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-medium">
+      <div className="item-dialog__footer">
+        {item && (
+          <button type="button" onClick={remove} className="item-dialog__footer-button item-dialog__footer-button--danger">
+            <Glyph name="trash" size={17} />
+            删除
+          </button>
+        )}
+        <button type="button" onClick={onClose} className="item-dialog__footer-button item-dialog__footer-button--secondary">
+          取消
+        </button>
+        <button type="button" onClick={save} className="item-dialog__footer-button item-dialog__footer-button--primary">
           {item?.status === 'pending' ? '保存并归位' : '保存'}
         </button>
       </div>

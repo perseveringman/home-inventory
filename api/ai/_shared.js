@@ -33,7 +33,7 @@ function normalizeOpenAiBody(body, defaultModel) {
   return {
     model: String(body.model || defaultModel || '').trim(),
     messages: body.messages,
-    max_tokens: clampNumber(body.max_tokens ?? body.maxTokens, 4096, 1, 8192),
+    max_tokens: clampNumber(body.max_completion_tokens ?? body.max_tokens ?? body.maxTokens, 4096, 1, 8192),
     temperature: clampNumber(body.temperature, 0.6, 0, 2),
     stream: Boolean(body.stream),
   };

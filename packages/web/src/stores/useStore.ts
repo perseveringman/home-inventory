@@ -5,11 +5,14 @@
 import { create } from 'zustand';
 import {
   IndexedDBStorage,
+  applyTagView,
+  migrateTagViewsToItemLists,
   type Cabinet,
   type Item,
   type ActionLog,
   type Label,
   type Photo,
+  type RecognitionTask,
   type Room,
   type ScanSession,
   type Storage,
@@ -18,6 +21,7 @@ import {
   type StoreSchema,
   scheduleAutoSync,
 } from '@home-inventory/core';
+import { syncSubscriptionRenewalReminders } from '../lib/subscriptionReminders';
 
 const storage: Storage = new IndexedDBStorage();
 
@@ -27,6 +31,7 @@ interface StoreState {
   cabinets: Cabinet[];
   items: Item[];
   subscriptions: Subscription[];
+  recognitionTasks: RecognitionTask[];
   scanSessions: ScanSession[];
   labels: Label[];
   actionLogs: ActionLog[];
@@ -44,6 +49,7 @@ export const useStore = create<StoreState>((set, get) => ({
   cabinets: [],
   items: [],
   subscriptions: [],
+  recognitionTasks: [],
   scanSessions: [],
   labels: [],
   actionLogs: [],
@@ -69,6 +75,7 @@ export const useStore = create<StoreState>((set, get) => ({
       cabinets,
       items,
       subscriptions,
+      recognitionTasks,
       scanSessions,
       labels,
       actionLogs,
@@ -78,6 +85,7 @@ export const useStore = create<StoreState>((set, get) => ({
       storage.all('cabinets'),
       storage.all('items'),
       storage.all('subscriptions'),
+      storage.all('recognitionTasks'),
       storage.all('scanSessions'),
       storage.all('labels'),
       storage.all('actionLogs'),
@@ -88,13 +96,21 @@ export const useStore = create<StoreState>((set, get) => ({
       cabinets,
       items,
       subscriptions,
+      recognitionTasks,
       scanSessions,
       labels,
       actionLogs,
       ready: true,
     });
+    syncSubscriptionRemindersSoon(subscriptions);
   },
 }));
+
+function syncSubscriptionRemindersSoon(subscriptions: Subscription[]) {
+  void syncSubscriptionRenewalReminders(subscriptions).catch((err) => {
+    console.warn('订阅系统提醒同步失败，已跳过：', err);
+  });
+}
 
 async function refreshCollection(
   storeName: StoreName,
@@ -114,7 +130,14 @@ async function refreshCollection(
       set({ items: await storage.all('items') });
       break;
     case 'subscriptions':
-      set({ subscriptions: await storage.all('subscriptions') });
+      {
+        const subscriptions = await storage.all('subscriptions');
+        set({ subscriptions });
+        syncSubscriptionRemindersSoon(subscriptions);
+      }
+      break;
+    case 'recognitionTasks':
+      set({ recognitionTasks: await storage.all('recognitionTasks') });
       break;
     case 'scanSessions':
       set({ scanSessions: await storage.all('scanSessions') });
@@ -133,6 +156,13 @@ async function refreshCollection(
 /** 在 main.tsx 启动时调用 */
 export async function initStore(): Promise<void> {
   await useStore.getState().reloadAll();
+  // 一次性迁移旧 TagView → ItemList。幂等，已迁移过会自动跳过。
+  try {
+    const items = useStore.getState().items;
+    await migrateTagViewsToItemLists(storage, items, applyTagView);
+  } catch (err) {
+    console.warn('TagView → ItemList 迁移失败，已跳过：', err);
+  }
 }
 
 /** 暴露 storage 给需要直接访问的地方（AI 识别/配置等） */

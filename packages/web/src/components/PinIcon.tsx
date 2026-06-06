@@ -11,6 +11,7 @@ import searchIcon from '../assets/pin-icons/search.png';
 import settingsIcon from '../assets/pin-icons/settings.png';
 import sparkIcon from '../assets/pin-icons/spark.png';
 import subscribeIcon from '../assets/pin-icons/subscribe.png';
+import tagIcon from '../assets/pin-icons/tag.png';
 import trashIcon from '../assets/pin-icons/trash.png';
 // Room icons (sliced from the new icon sheet)
 import roomSofa from '../assets/pin-icons/rooms/sofa.png';
@@ -83,7 +84,7 @@ const ICONS: Record<PinIconName, string> = {
   chat: sparkIcon,
   photo: galleryIcon,
   spark: sparkIcon,
-  tag: sparkIcon,
+  tag: tagIcon,
   trash: trashIcon,
   folder: bookIcon,
   book: bookIcon,
@@ -142,6 +143,8 @@ export function roomIconName(icon?: string): PinIconName {
 
 export function titleIcon(title: string): PinIconName {
   if (title.includes('待处理')) return 'inbox';
+  if (title.includes('整理')) return 'inbox';
+  if (title.includes('厨房')) return 'room-kitchen';
   if (title.includes('总览')) return 'overview';
   if (title.includes('订阅')) return 'subscribe';
   if (title.includes('设置')) return 'settings';

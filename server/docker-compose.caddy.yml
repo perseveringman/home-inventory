@@ -1,0 +1,56 @@
+# 家居收纳 · AI 后端（Caddy 模式 / 备用）
+#
+# 适用场景：服务器上没有宝塔/nginx，或者你想让 docker 全权处理 HTTPS。
+# 国内轻量服 + 宝塔环境请用主 docker-compose.yml + 宝塔反代。
+#
+# 用法：
+#   docker compose -f docker-compose.caddy.yml up -d --build
+#
+# 前置条件：
+#   - homeapp.zyb.world 的 A 记录已解析到本机公网 IP
+#   - 80/443 端口未被占用（否则 Caddy 启不来）
+#   - 80 端口可从公网访问（HTTP-01 challenge 需要）
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    image: home-inventory-api:latest
+    container_name: home-inventory-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 8787
+      HOST: 0.0.0.0
+      NODE_ENV: production
+    # 此模式下 api 不暴露端口，只通过 docker 内部网络给 caddy 用
+    expose:
+      - "8787"
+    networks:
+      - homeapp
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: home-inventory-caddy
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - homeapp
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  homeapp:
+    driver: bridge

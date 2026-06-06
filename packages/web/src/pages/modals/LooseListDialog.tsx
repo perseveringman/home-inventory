@@ -1,6 +1,6 @@
 import type { Cabinet, Item, Room } from '@home-inventory/core';
 import { GLOBAL_ROOM_ID } from '@home-inventory/core';
-import { BlobImage } from '../../components/BlobImage';
+import { ItemThumb } from '../../components/ItemThumb';
 import { openModal } from '../../components/Modal';
 import { PinIcon } from '../../components/PinIcon';
 import ItemDialog from './ItemDialog';
@@ -46,11 +46,7 @@ export default function LooseListDialog({ room, cabinet, items, onClose }: Props
                   待归位
                 </span>
               )}
-              <BlobImage
-                blob={item.image || null}
-                emoji={item.aiEmoji || 'box'}
-                className="w-full aspect-square rounded-lg object-cover"
-              />
+              <ItemThumb item={item} className="w-full aspect-square rounded-lg" />
               <div className="text-xs font-medium truncate mt-1">{item.name}</div>
               <div className="text-[10px] text-ink-400">× {item.qty}</div>
             </button>

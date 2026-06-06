@@ -3,9 +3,12 @@ import { GLOBAL_ROOM_ID, PRESET_TAGS } from '../models';
 import { getConfig } from '../storage/indexeddb';
 import type { Storage } from '../storage/types';
 import { fileToBase64 } from '../utils/image';
+import { apiAuthHeaders, apiUrl, getUserApiKey } from './apiBase';
 
 const DEEPSEEK_API = 'https://api.deepseek.com/chat/completions';
+const MINIMAX_API = 'https://api.minimaxi.com/v1/chat/completions';
 const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
+const DEFAULT_MINIMAX_MODEL = 'MiniMax-M3';
 
 export type SuggestionMode = 'ai' | 'local';
 
@@ -161,22 +164,25 @@ ${buildPlacementOptions(rooms, cabinets, items)}
 }
 
 async function callOpenAiCompat(
-  provider: 'deepseek' | 'openrouter',
+  provider: 'deepseek' | 'minimax' | 'openrouter',
   url: string,
   apiKey: string | undefined,
   model: string | undefined,
   messages: Array<{ role: 'system' | 'user'; content: unknown }>
 ): Promise<string> {
-  const res = await fetch(apiKey ? url : `/api/ai/${provider}`, {
+  const effectiveKey = apiKey || getUserApiKey(provider) || undefined;
+  const res = await fetch(effectiveKey ? url : apiUrl(`/api/ai/${provider}`), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...(effectiveKey ? { Authorization: `Bearer ${effectiveKey}` } : apiAuthHeaders()),
     },
     body: JSON.stringify({
       model,
       messages,
-      max_tokens: 900,
+      ...(provider === 'minimax'
+        ? { max_completion_tokens: 900, reasoning_split: true }
+        : { max_tokens: 900 }),
       temperature: 0.25,
     }),
   });
@@ -388,17 +394,18 @@ function inferSeason(name: string): Season | undefined {
   return undefined;
 }
 
-async function buildOpenRouterMessages(prompt: string, item: Item) {
+async function buildVisionMessages(prompt: string, item: Item) {
   if (!item.image) {
     return [{ role: 'user' as const, content: prompt }];
   }
   const base64 = await fileToBase64(item.image);
+  const mediaType = item.image.type || 'image/jpeg';
   return [
     {
       role: 'user' as const,
       content: [
         { type: 'text', text: prompt },
-        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
+        { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
       ],
     },
   ];
@@ -413,11 +420,24 @@ export async function suggestItemDraft(
   if (input.item.image) {
     try {
       const text = await callOpenAiCompat(
+        'minimax',
+        MINIMAX_API,
+        undefined,
+        (await getConfig<string>(storage, 'minimaxModel', '')) || DEFAULT_MINIMAX_MODEL,
+        await buildVisionMessages(prompt, input.item)
+      );
+      return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+    } catch (err) {
+      console.warn('MiniMax item suggestion failed, fallback:', err);
+    }
+
+    try {
+      const text = await callOpenAiCompat(
         'openrouter',
         OPENROUTER_API,
         undefined,
         (await getConfig<string>(storage, 'openrouterModel', '')) || undefined,
-        await buildOpenRouterMessages(prompt, input.item)
+        await buildVisionMessages(prompt, input.item)
       );
       return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
     } catch (err) {
@@ -436,6 +456,19 @@ export async function suggestItemDraft(
     return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
   } catch (err) {
     console.warn('DeepSeek item suggestion failed, fallback:', err);
+  }
+
+  try {
+    const text = await callOpenAiCompat(
+      'minimax',
+      MINIMAX_API,
+      undefined,
+      (await getConfig<string>(storage, 'minimaxModel', '')) || DEFAULT_MINIMAX_MODEL,
+      [{ role: 'user', content: prompt }]
+    );
+    return sanitizeSuggestion(parseJsonObject(text), input.rooms, input.cabinets, 'ai');
+  } catch (err) {
+    console.warn('MiniMax text item suggestion failed, fallback:', err);
   }
 
   try {
