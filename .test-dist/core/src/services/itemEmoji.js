@@ -57,6 +57,9 @@ function parseJson(text) {
 }
 async function callOpenAiCompat(provider, url, apiKey, model, prompt) {
     const key = apiKey || (0, apiBase_1.getUserApiKey)(provider) || undefined;
+    if (provider === 'minimax' && !key) {
+        throw new Error('MiniMax 官方 API Key 未配置，跳过 MiniMax 直连');
+    }
     const res = await fetch(key ? url : (0, apiBase_1.apiUrl)(`/api/ai/${provider}`), {
         method: 'POST',
         headers: {
@@ -67,7 +70,7 @@ async function callOpenAiCompat(provider, url, apiKey, model, prompt) {
             model,
             messages: [{ role: 'user', content: prompt }],
             ...(provider === 'minimax'
-                ? { max_completion_tokens: 120, reasoning_split: true }
+                ? { max_completion_tokens: 120, thinking: { type: 'disabled' } }
                 : { max_tokens: 120 }),
             temperature: 0.4,
         }),
@@ -79,6 +82,9 @@ async function callOpenAiCompat(provider, url, apiKey, model, prompt) {
     const data = await res.json();
     if (data.error)
         throw new Error(data.error.message || 'AI 配图返回错误');
+    if (data.base_resp?.status_code) {
+        throw new Error(data.base_resp.status_msg || `MiniMax 返回错误 ${data.base_resp.status_code}`);
+    }
     return data.choices?.[0]?.message?.content || '';
 }
 /**

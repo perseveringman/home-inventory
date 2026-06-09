@@ -299,6 +299,9 @@ function stripRenameBlock(text) {
 }
 async function streamOpenAiCompat(provider, url, apiKey, model, messages, onDelta, abortSignal) {
     const effectiveKey = apiKey || (0, apiBase_1.getUserApiKey)(provider) || undefined;
+    if (provider === 'minimax' && !effectiveKey) {
+        throw new Error('MiniMax 官方 API Key 未配置，跳过 MiniMax 直连');
+    }
     const res = await fetch(effectiveKey ? url : (0, apiBase_1.apiUrl)(`/api/ai/${provider}`), {
         method: 'POST',
         headers: {
@@ -309,7 +312,7 @@ async function streamOpenAiCompat(provider, url, apiKey, model, messages, onDelt
             model,
             messages,
             ...(provider === 'minimax'
-                ? { max_completion_tokens: 4096, reasoning_split: true }
+                ? { max_completion_tokens: 4096, thinking: { type: 'disabled' } }
                 : { max_tokens: 4096 }),
             temperature: 0.6,
             stream: true,
@@ -401,6 +404,9 @@ async function testTextAI(storage, provider) {
         (provider === 'minimax' ? DEFAULT_MINIMAX_MODEL : undefined);
     const url = provider === 'deepseek' ? DEEPSEEK_API : provider === 'minimax' ? MINIMAX_API : OPENROUTER_API;
     const userKey = (0, apiBase_1.getUserApiKey)(provider);
+    if (provider === 'minimax' && !userKey) {
+        throw new Error('MiniMax 官方 API Key 未配置');
+    }
     const res = await fetch(userKey ? url : (0, apiBase_1.apiUrl)(`/api/ai/${provider}`), {
         method: 'POST',
         headers: {
@@ -411,7 +417,7 @@ async function testTextAI(storage, provider) {
             model,
             messages: [{ role: 'user', content: '用一句中文回复：连接正常。' }],
             ...(provider === 'minimax'
-                ? { max_completion_tokens: 32, reasoning_split: true }
+                ? { max_completion_tokens: 32, thinking: { type: 'disabled' } }
                 : { max_tokens: 32 }),
         }),
     });

@@ -9,6 +9,7 @@
     "preview": "pnpm --filter @home-inventory/web preview",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter @home-inventory/core test",
+    "test:minimax-order": "node scripts/test-minimax-order.mjs",
     "lint": "pnpm -r lint",
     "ios:add": "pnpm --filter @home-inventory/web ios:add",
     "ios:sync": "pnpm --filter @home-inventory/web ios:sync",

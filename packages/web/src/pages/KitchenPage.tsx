@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   GLOBAL_ROOM_ID,
@@ -32,6 +32,19 @@ import ItemDialog from './modals/ItemDialog';
 import QuickAddDialog from './modals/QuickAddDialog';
 
 type KitchenFilter = 'priority' | 'expiring' | 'opened' | 'lowstock' | 'all';
+
+interface ImportDebugEntry {
+  name: string;
+  rect?: KitchenImportDraft['imageRect'];
+  cropUrl?: string;
+}
+
+interface ImportDebugState {
+  sourceUrl: string;
+  sourceWidth: number;
+  sourceHeight: number;
+  entries: ImportDebugEntry[];
+}
 
 const FILTERS: Array<{ id: KitchenFilter; label: string }> = [
   { id: 'priority', label: '今日优先' },
@@ -93,6 +106,35 @@ function buildImportedNote(draft: KitchenImportDraft) {
     .join('；');
 }
 
+function looksLikeOrderImport(drafts: KitchenImportDraft[]) {
+  return drafts.some(
+    (draft) =>
+      draft.paidPrice != null ||
+      draft.unitPrice != null ||
+      !!draft.spec ||
+      !!draft.productionDate ||
+      /订单|截图|实付|单价|规格/.test(`${draft.note || ''} ${draft.name}`)
+  );
+}
+
+function revokeImportDebug(debug: ImportDebugState | null) {
+  if (!debug) return;
+  URL.revokeObjectURL(debug.sourceUrl);
+  for (const entry of debug.entries) {
+    if (entry.cropUrl) URL.revokeObjectURL(entry.cropUrl);
+  }
+}
+
+function rectLabel(rect: KitchenImportDraft['imageRect']) {
+  if (!rect) return '无坐标';
+  return `x=${rect.x.toFixed(3)} y=${rect.y.toFixed(3)} w=${rect.w.toFixed(3)} h=${rect.h.toFixed(3)}`;
+}
+
+function pixelRectLabel(rect: KitchenImportDraft['imageRect'], width: number, height: number) {
+  if (!rect) return '';
+  return `${Math.round(rect.x * width)}, ${Math.round(rect.y * height)}, ${Math.round(rect.w * width)} × ${Math.round(rect.h * height)} px`;
+}
+
 export default function KitchenPage() {
   const navigate = useNavigate();
   const rooms = useStore((s) => s.rooms);
@@ -106,6 +148,9 @@ export default function KitchenPage() {
   const [importing, setImporting] = useState(false);
   const [preferences, setPreferences] = useState('');
   const [suggestion, setSuggestion] = useState<KitchenTodaySuggestion | null>(null);
+  const [lastImportDebug, setLastImportDebug] = useState<ImportDebugState | null>(null);
+
+  useEffect(() => () => revokeImportDebug(lastImportDebug), [lastImportDebug]);
 
   const kitchenItems = useMemo(
     () => items.filter((item) => isKitchenInventoryItem(item, rooms, cabinets)),
@@ -135,8 +180,8 @@ export default function KitchenPage() {
     [availableItems]
   );
   const lowStockItems = useMemo(
-    () => kitchenItems.filter((item) => item.minStock != null && Number(item.qty || 0) < Number(item.minStock)),
-    [kitchenItems]
+    () => availableItems.filter((item) => item.minStock != null && Number(item.qty || 0) < Number(item.minStock)),
+    [availableItems]
   );
   const pendingCount = kitchenItems.filter((item) => item.status === 'pending').length;
 
@@ -145,10 +190,9 @@ export default function KitchenPage() {
     if (filter === 'expiring') return expiringItems;
     if (filter === 'opened') return openedItems;
     if (filter === 'lowstock') return lowStockItems;
-    return kitchenItems
-      .filter((item) => item.status !== 'pending')
+    return [...availableItems]
       .sort((a, b) => (b.lastTouchedAt || b.createdAt) - (a.lastTouchedAt || a.createdAt));
-  }, [expiringItems, filter, kitchenItems, lowStockItems, openedItems, priorityItems]);
+  }, [availableItems, expiringItems, filter, lowStockItems, openedItems, priorityItems]);
 
   const quickAdd = () => openModal((close) => <QuickAddDialog defaultRoomId={kitchenRoom?.id || GLOBAL_ROOM_ID} onClose={close} />);
 
@@ -159,19 +203,37 @@ export default function KitchenPage() {
       if (!file) return;
       setImporting(true);
       toast('AI 正在读取订单截图…', 2500);
-      const compressed = await compressImage(file, 1800, 0.86);
+      const compressed = await compressImage(file, 4096, 0.88);
       const storage = getStorage();
       const drafts = await suggestKitchenImportFromImage(storage, compressed.blob);
       if (!drafts.length) {
         toast('没有识别到可导入的食材');
         return;
       }
+      const isOrderImport = looksLikeOrderImport(drafts);
       const target =
         kitchenRoom?.id ? await ensureLooseCabinet(storage, kitchenRoom.id) : await ensureGlobalLooseCabinet(storage);
+      const debugEntries: ImportDebugEntry[] = [];
       for (const draft of drafts) {
         const productImage = draft.imageRect
-          ? await cropItemFromPhoto(compressed.blob, draft.imageRect, 320)
+          ? await cropItemFromPhoto(
+              compressed.blob,
+              draft.imageRect,
+              isOrderImport
+                ? {
+                    maxSize: 320,
+                    paddingRatio: 0.04,
+                    contain: true,
+                    background: '#ffffff',
+                  }
+                : 320
+            )
           : null;
+        debugEntries.push({
+          name: draft.name,
+          rect: draft.imageRect,
+          cropUrl: productImage ? URL.createObjectURL(productImage) : undefined,
+        });
         const image = productImage || (await generateItemThumb(draft.name));
         const item: Item = {
           id: uid(),
@@ -204,6 +266,16 @@ export default function KitchenPage() {
         };
         await storage.add('items', item);
       }
+      const nextDebug: ImportDebugState = {
+        sourceUrl: URL.createObjectURL(compressed.blob),
+        sourceWidth: compressed.width,
+        sourceHeight: compressed.height,
+        entries: debugEntries,
+      };
+      setLastImportDebug((prev) => {
+        revokeImportDebug(prev);
+        return nextDebug;
+      });
       await reloadAll();
       toast(`已导入 ${drafts.length} 项厨房物品`);
     } catch (err: any) {
@@ -234,23 +306,98 @@ export default function KitchenPage() {
     }
   };
 
+  const latestItem = async (item: Item) => {
+    return ((await getStorage().get('items', item.id).catch(() => null)) as Item | null) || item;
+  };
+
   const consumeOne = async (item: Item) => {
-    const nextQty = Math.max(0, Number(item.qty || 0) - 1);
-    await put('items', { ...item, qty: nextQty, lastTouchedAt: Date.now() });
+    const latest = await latestItem(item);
+    const nextQty = Math.max(0, Number(latest.qty || 0) - 1);
+    await put('items', {
+      ...latest,
+      qty: nextQty,
+      image: latest.image || item.image,
+      lastTouchedAt: Date.now(),
+    });
     toast(nextQty > 0 ? `已用掉 1 份，还剩 ${nextQty}` : '已标记用完');
   };
 
   const markOpened = async (item: Item) => {
+    const latest = await latestItem(item);
     await put('items', {
-      ...item,
-      openedAt: item.openedAt || new Date().toISOString().slice(0, 10),
-      openedShelfDays: item.openedShelfDays || 7,
+      ...latest,
+      image: latest.image || item.image,
+      openedAt: latest.openedAt || new Date().toISOString().slice(0, 10),
+      openedShelfDays: latest.openedShelfDays ?? 7,
       lastTouchedAt: Date.now(),
     });
     toast('已标记开封');
   };
 
   const openItem = (item: Item) => openModal((close) => <ItemDialog item={item} onClose={close} />);
+
+  const openImportDebug = () => {
+    if (!lastImportDebug) return;
+    const debug = lastImportDebug;
+    openModal((close) => (
+      <div>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">识别框校验</h2>
+            <p className="mt-1 text-xs text-ink-500">框不准是 AI 坐标问题；框准但小图不准是裁剪问题。</p>
+          </div>
+          <button onClick={close} className="px-3 py-1.5 rounded-lg bg-slate-100 text-sm text-ink-700">
+            关闭
+          </button>
+        </div>
+        <div className="mt-4 rounded-xl border border-slate-200 bg-white overflow-hidden relative">
+          <img src={debug.sourceUrl} alt="导入原图" className="block w-full h-auto" />
+          {debug.entries.map((entry, index) =>
+            entry.rect ? (
+              <div
+                key={`${entry.name}-${index}`}
+                className="absolute border-2 border-brand-500 bg-brand-500/10"
+                style={{
+                  left: `${entry.rect.x * 100}%`,
+                  top: `${entry.rect.y * 100}%`,
+                  width: `${entry.rect.w * 100}%`,
+                  height: `${entry.rect.h * 100}%`,
+                }}
+              >
+                <span className="absolute -top-5 left-0 rounded bg-brand-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                  {index + 1}
+                </span>
+              </div>
+            ) : null
+          )}
+        </div>
+        <div className="mt-4 space-y-2">
+          {debug.entries.map((entry, index) => (
+            <div key={`${entry.name}-${index}`} className="flex gap-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5">
+              <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-white border border-slate-100 flex items-center justify-center">
+                {entry.cropUrl ? (
+                  <img src={entry.cropUrl} alt={`${entry.name} 裁剪图`} className="h-full w-full object-contain" />
+                ) : (
+                  <span className="text-[10px] text-ink-400">无裁图</span>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-ink-900">
+                  {index + 1}. {entry.name}
+                </div>
+                <div className="mt-1 text-[11px] text-ink-500">{rectLabel(entry.rect)}</div>
+                {entry.rect && (
+                  <div className="mt-0.5 text-[11px] text-ink-400">
+                    原图 {debug.sourceWidth} × {debug.sourceHeight}；裁剪源 {pixelRectLabel(entry.rect, debug.sourceWidth, debug.sourceHeight)}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    ));
+  };
 
   return (
     <div>
@@ -274,6 +421,15 @@ export default function KitchenPage() {
               <PinIcon name="gallery" size={18} tile={false} />
               {importing ? '识别中' : '相册'}
             </button>
+            {lastImportDebug && (
+              <button
+                onClick={openImportDebug}
+                className="px-3 py-1.5 rounded-lg bg-white border border-slate-100 text-ink-700 text-sm inline-flex items-center gap-1"
+              >
+                <PinIcon name="search" size={18} tile={false} />
+                识别框
+              </button>
+            )}
             <button
               onClick={quickAdd}
               className="px-3 py-1.5 rounded-lg bg-slate-100 text-ink-700 text-sm inline-flex items-center gap-1"

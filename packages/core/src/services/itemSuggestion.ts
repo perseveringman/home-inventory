@@ -171,6 +171,9 @@ async function callOpenAiCompat(
   messages: Array<{ role: 'system' | 'user'; content: unknown }>
 ): Promise<string> {
   const effectiveKey = apiKey || getUserApiKey(provider) || undefined;
+  if (provider === 'minimax' && !effectiveKey) {
+    throw new Error('MiniMax 官方 API Key 未配置，跳过 MiniMax 直连');
+  }
   const res = await fetch(effectiveKey ? url : apiUrl(`/api/ai/${provider}`), {
     method: 'POST',
     headers: {
@@ -181,7 +184,7 @@ async function callOpenAiCompat(
       model,
       messages,
       ...(provider === 'minimax'
-        ? { max_completion_tokens: 900, reasoning_split: true }
+        ? { max_completion_tokens: 900, thinking: { type: 'disabled' } }
         : { max_tokens: 900 }),
       temperature: 0.25,
     }),
@@ -192,6 +195,9 @@ async function callOpenAiCompat(
   }
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || 'AI 建议返回错误');
+  if (data.base_resp?.status_code) {
+    throw new Error(data.base_resp.status_msg || `MiniMax 返回错误 ${data.base_resp.status_code}`);
+  }
   return data.choices?.[0]?.message?.content || '';
 }
 

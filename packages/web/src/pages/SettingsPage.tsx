@@ -119,7 +119,7 @@ export default function SettingsPage() {
     await setConfig(getStorage(), meta.configKey, value);
     setUserApiKey(meta.provider, value);
     setKeyDrafts((prev) => ({ ...prev, [meta.provider]: value }));
-    toast(value ? `${meta.label} key 已保存，将直连官方 API` : `${meta.label} key 已清空，回退到后端代理`);
+    toast(value ? `${meta.label} key 已保存，将直连官方 API` : `${meta.label} key 已清空，将使用后端或本地回退`);
   };
 
   const clearKey = async (meta: ProviderMeta) => {

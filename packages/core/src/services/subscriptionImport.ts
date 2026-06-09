@@ -31,7 +31,7 @@ type OpenAiProvider = 'minimax' | 'openrouter' | 'deepseek';
 function pickVisionProvider(explicitApiKey?: string): OpenAiProvider {
   if (explicitApiKey || getUserApiKey('minimax')) return 'minimax';
   if (getUserApiKey('openrouter')) return 'openrouter';
-  return 'minimax';
+  return 'openrouter';
 }
 
 function providerUrl(provider: OpenAiProvider): string {
@@ -339,7 +339,7 @@ category 只能是 software/loan/utility/rent/membership/insurance/telecom/other
         },
       ],
       ...(provider === 'minimax'
-        ? { max_completion_tokens: 2048, reasoning_split: true }
+        ? { max_completion_tokens: 2048, thinking: { type: 'disabled' } }
         : { max_tokens: 2048 }),
       temperature: 0.2,
     }),
@@ -349,6 +349,10 @@ category 只能是 software/loan/utility/rent/membership/insurance/telecom/other
     throw new Error(`截图识别失败 (${res.status})：${err.slice(0, 160)}`);
   }
   const data = await res.json();
+  if (data.error) throw new Error(data.error.message || '截图识别返回错误');
+  if (data.base_resp?.status_code) {
+    throw new Error(data.base_resp.status_msg || `MiniMax 返回错误 ${data.base_resp.status_code}`);
+  }
   const text = data.choices?.[0]?.message?.content || data.raw || '';
   return extractSubscriptionActionPlan(String(text));
 }
@@ -405,7 +409,7 @@ export async function recognizeSubscriptionFromImage(
         },
       ],
       ...(provider === 'minimax'
-        ? { max_completion_tokens: 1024, reasoning_split: true }
+        ? { max_completion_tokens: 1024, thinking: { type: 'disabled' } }
         : { max_tokens: 1024 }),
       temperature: 0.2,
     }),
@@ -416,6 +420,10 @@ export async function recognizeSubscriptionFromImage(
     throw new Error(`图片识别失败 (${res.status})：${err.slice(0, 160)}`);
   }
   const data = await res.json();
+  if (data.error) throw new Error(data.error.message || '图片识别返回错误');
+  if (data.base_resp?.status_code) {
+    throw new Error(data.base_resp.status_msg || `MiniMax 返回错误 ${data.base_resp.status_code}`);
+  }
   const text = String(data.choices?.[0]?.message?.content || data.raw || '');
   return parseDraftJson(text, 'ai_vision');
 }
@@ -573,7 +581,7 @@ export async function recognizeSubscriptionFromVoice(
       model: options.model || providerDefaultModel(provider),
       messages: [{ role: 'user', content: prompt }],
       ...(provider === 'minimax'
-        ? { max_completion_tokens: 512, reasoning_split: true }
+        ? { max_completion_tokens: 512, thinking: { type: 'disabled' } }
         : { max_tokens: 512 }),
       temperature: 0.2,
     }),
@@ -584,6 +592,10 @@ export async function recognizeSubscriptionFromVoice(
     throw new Error(`语音识别失败 (${res.status})：${err.slice(0, 160)}`);
   }
   const data = await res.json();
+  if (data.error) throw new Error(data.error.message || '语音识别返回错误');
+  if (data.base_resp?.status_code) {
+    throw new Error(data.base_resp.status_msg || `MiniMax 返回错误 ${data.base_resp.status_code}`);
+  }
   const out = String(data.choices?.[0]?.message?.content || data.raw || '');
   return parseDraftJson(out, 'ai_text');
 }

@@ -25,14 +25,53 @@ DEFAULT_TEAM="9L67H7PVDT"
 TEAM_ID="${DEVELOPMENT_TEAM:-$DEFAULT_TEAM}"
 
 # 选择设备
-DEVICE_ID="${1:-}"
-if [ -z "$DEVICE_ID" ]; then
-  # 抓第一行包含 iPhone 字样的 UDID（标准 UUID 格式），这样不依赖列宽
-  DEVICE_ID="$(xcrun devicectl list devices 2>/dev/null \
-    | grep -i 'iPhone' \
-    | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' \
-    | head -1)" || true
-fi
+DEVICE_QUERY="${1:-}"
+DEVICE_ID="$(DEVICE_QUERY="$DEVICE_QUERY" python3 <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+query = os.environ.get("DEVICE_QUERY", "").strip()
+try:
+    raw = subprocess.check_output(
+        ["xcrun", "devicectl", "list", "devices", "--json-output", "-"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    devices = json.loads(raw).get("result", {}).get("devices", [])
+except Exception:
+    devices = []
+
+def is_iphone(device):
+    hardware = device.get("hardwareProperties", {})
+    properties = device.get("deviceProperties", {})
+    return (
+        hardware.get("deviceType") == "iPhone"
+        or hardware.get("productType", "").startswith("iPhone")
+        or "iPhone" in properties.get("name", "")
+    )
+
+def matches(device, value):
+    hardware = device.get("hardwareProperties", {})
+    properties = device.get("deviceProperties", {})
+    candidates = [
+        device.get("identifier", ""),
+        hardware.get("udid", ""),
+        properties.get("name", ""),
+    ]
+    return value in candidates
+
+selected = None
+if query:
+    selected = next((device for device in devices if matches(device, query)), None)
+else:
+    selected = next((device for device in devices if is_iphone(device)), None)
+
+if selected:
+    print(selected.get("identifier", ""))
+PY
+)"
 if [ -z "$DEVICE_ID" ]; then
   echo "❌ 没有发现任何已连接的 iPhone。请用 USB 连上手机并解锁后重试。" >&2
   exit 1

@@ -47,11 +47,14 @@ const CABINET_DETECT_PROMPT = `你是一个严谨的家居收纳视觉识别助�
 6. 每个物品给一个 emoji，尽量贴合物品；不确定用 "📦"。
 
 【边界框规则】
-1. rect 使用归一化坐标，格式为 {"x":0~1,"y":0~1,"w":0~1,"h":0~1}。
-2. 原点在图片左上角，x 向右，y 向下。
-3. 边界框要紧贴目标主体，尽量不要包含大量背景。
-4. 必须保证 x+w ≤ 1 且 y+h ≤ 1。
-5. cabinets 的框可略大，覆盖完整可点击区域；items 的框要尽量适合裁剪缩略图。
+1. rect 使用相对于整张上传图片的归一化坐标，格式为 {"x":0~1,"y":0~1,"w":0~1,"h":0~1}。
+2. 原点在图片左上角，x 向右，y 向下；x/y 是左上角，不是中心点；w/h 是宽高，不是右下角坐标。
+3. 不要输出像素值、百分号、屏幕可见区域坐标或局部柜子坐标；所有 rect 都必须按整张原图宽高换算。
+4. 边界框要紧贴目标主体，尽量不要包含大量背景、墙面、文字标签或相邻物品。
+5. 必须保证 x+w ≤ 1 且 y+h ≤ 1，建议保留 2-3 位小数。
+6. cabinets 的框可略大，覆盖完整可点击区域；items 的框要尽量适合裁剪缩略图。
+7. 输出前逐项自检：rect 中心点必须落在对应目标上；如果框到空白、只框到局部边缘、跨到相邻物品，必须调整或删除该项。
+8. 对过小、遮挡严重、无法可靠框定的物品，不要输出 rect，也不要为了凑数量猜测坐标。
 
 【去重与归属】
 1. cabinets 与 items 可以重叠：一个柜子内可以包含很多 items。
@@ -190,9 +193,10 @@ ${truncateForRepair(rawText)}
 
 要求：
 1. cabinets 和 items 必须是数组，没有结果时才返回 []。
-2. rect 必须是 0~1 的归一化数字，且 x+w ≤ 1、y+h ≤ 1。
+2. rect 必须是相对于整张原图的 0~1 归一化数字，x/y 是左上角，w/h 是宽高，且 x+w ≤ 1、y+h ≤ 1。
 3. 不要丢弃上一次已经可信的识别项；只修复格式、字段、越界坐标、空结果或明显错误。
-4. 如果上一次数据无法复用，请重新基于原始照片识别。`;
+4. 每个 rect 的中心点必须落在对应目标上，不能只框空白、文字、边缘或相邻物品。
+5. 如果上一次数据无法复用，请重新基于原始照片识别。`;
 }
 
 async function parseDetectionWithRepair({
@@ -241,17 +245,20 @@ async function callMiniMax(
   messages: any[]
 ): Promise<string> {
   const effectiveKey = apiKey || getUserApiKey('minimax') || undefined;
-  const res = await fetch(effectiveKey ? MINIMAX_API : apiUrl('/api/ai/minimax'), {
+  if (!effectiveKey) {
+    throw new Error('MiniMax 官方 API Key 未配置，跳过 MiniMax 直连');
+  }
+  const res = await fetch(MINIMAX_API, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(effectiveKey ? { Authorization: `Bearer ${effectiveKey}` } : apiAuthHeaders()),
+      Authorization: `Bearer ${effectiveKey}`,
     },
     body: JSON.stringify({
       model,
       messages,
       max_completion_tokens: 4096,
-      reasoning_split: true,
+      thinking: { type: 'disabled' },
       temperature: 0.2,
     }),
   });
@@ -261,6 +268,9 @@ async function callMiniMax(
   }
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || 'MiniMax 返回错误');
+  if (data.base_resp?.status_code) {
+    throw new Error(data.base_resp.status_msg || `MiniMax 返回错误 ${data.base_resp.status_code}`);
+  }
   return data.choices?.[0]?.message?.content || '';
 }
 

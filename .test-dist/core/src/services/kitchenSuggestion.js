@@ -214,6 +214,9 @@ ${pantry || '（空）'}
 }
 async function callOpenAiCompat(provider, url, apiKey, model, messages) {
     const effectiveKey = apiKey || (0, apiBase_1.getUserApiKey)(provider) || undefined;
+    if (provider === 'minimax' && !effectiveKey) {
+        throw new Error('MiniMax 官方 API Key 未配置，跳过 MiniMax 直连');
+    }
     const res = await fetch(effectiveKey ? url : (0, apiBase_1.apiUrl)(`/api/ai/${provider}`), {
         method: 'POST',
         headers: {
@@ -223,7 +226,9 @@ async function callOpenAiCompat(provider, url, apiKey, model, messages) {
         body: JSON.stringify({
             model,
             messages,
-            ...(provider === 'minimax' ? { max_completion_tokens: 1600, reasoning_split: true } : { max_tokens: 1600 }),
+            ...(provider === 'minimax'
+                ? { max_completion_tokens: 1600, thinking: { type: 'disabled' } }
+                : { max_tokens: 1600 }),
             temperature: 0.35,
         }),
     });
@@ -234,6 +239,9 @@ async function callOpenAiCompat(provider, url, apiKey, model, messages) {
     const data = await res.json();
     if (data.error)
         throw new Error(data.error.message || '厨房 AI 返回错误');
+    if (data.base_resp?.status_code) {
+        throw new Error(data.base_resp.status_msg || `MiniMax 返回错误 ${data.base_resp.status_code}`);
+    }
     return data.choices?.[0]?.message?.content || '';
 }
 async function callVisionCompat(provider, url, model, blob, prompt) {
@@ -244,7 +252,7 @@ async function callVisionCompat(provider, url, model, blob, prompt) {
             role: 'user',
             content: [
                 { type: 'text', text: prompt },
-                { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
+                { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}`, detail: 'high' } },
             ],
         },
     ]);
@@ -287,6 +295,20 @@ function money(value) {
     const parsed = Number(String(value).replace(/[¥￥,\s]/g, ''));
     return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) / 100 : undefined;
 }
+function pixelRect(value, size, offsetY = 0) {
+    const obj = (value && typeof value === 'object' ? value : {});
+    let x = Number(obj.x);
+    let y = Number(obj.y) + offsetY;
+    let w = Number(obj.w);
+    let h = Number(obj.h);
+    if (![x, y, w, h].every(Number.isFinite))
+        return undefined;
+    x = Math.max(0, Math.min(size.width, x));
+    y = Math.max(0, Math.min(size.height, y));
+    w = Math.max(1, Math.min(size.width - x, w));
+    h = Math.max(1, Math.min(size.height - y, h));
+    return rect({ x: x / size.width, y: y / size.height, w: w / size.width, h: h / size.height });
+}
 function rect(value) {
     const obj = (value && typeof value === 'object' ? value : {});
     let x = Number(obj.x);
@@ -325,6 +347,46 @@ function clampConfidence(value, fallback = 0.72) {
     if (!Number.isFinite(parsed))
         return fallback;
     return Math.max(0.1, Math.min(1, parsed));
+}
+function rectIoU(a, b) {
+    if (!a || !b)
+        return 0;
+    const ax2 = a.x + a.w;
+    const ay2 = a.y + a.h;
+    const bx2 = b.x + b.w;
+    const by2 = b.y + b.h;
+    const x1 = Math.max(a.x, b.x);
+    const y1 = Math.max(a.y, b.y);
+    const x2 = Math.min(ax2, bx2);
+    const y2 = Math.min(ay2, by2);
+    const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+    const union = a.w * a.h + b.w * b.h - intersection;
+    return union > 0 ? intersection / union : 0;
+}
+function suppressOverlappingDrafts(drafts) {
+    const sorted = [...drafts].sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    const kept = [];
+    for (const draft of sorted) {
+        if (!draft.imageRect) {
+            kept.push(draft);
+            continue;
+        }
+        const duplicate = kept.some((entry) => rectIoU(draft.imageRect, entry.imageRect) > 0.1 || sameNearbyName(draft, entry));
+        if (!duplicate)
+            kept.push(draft);
+    }
+    return kept.sort((a, b) => (a.imageRect?.y || 0) - (b.imageRect?.y || 0));
+}
+function sameNearbyName(a, b) {
+    const an = a.name.replace(/\s/g, '');
+    const bn = b.name.replace(/\s/g, '');
+    if (!an || !bn || !(an.includes(bn) || bn.includes(an)))
+        return false;
+    if (!a.imageRect || !b.imageRect)
+        return false;
+    const ay = a.imageRect.y + a.imageRect.h / 2;
+    const by = b.imageRect.y + b.imageRect.h / 2;
+    return Math.abs(ay - by) < Math.max(a.imageRect.h, b.imageRect.h) * 1.2;
 }
 function sanitizeTodaySuggestion(raw, ranked, mode) {
     const obj = (raw && typeof raw === 'object' ? raw : {});
@@ -457,45 +519,31 @@ async function suggestKitchenToday(storage, input) {
     return localTodaySuggestion(ranked);
 }
 function buildKitchenImportPrompt() {
-    return `你是厨房库存导入助手。请从图片中识别食材、调料、饮料、零食或剩菜，并把电商/买菜订单里的商品信息结构化。
+    return `识别图片里的订单商品。
 
-图片可能是：
-1. 冰箱/橱柜/调料架照片；
-2. 生鲜或外卖购物截图；
-3. 超市订单、收据、小票、备忘录截图；
-4. 手写或印刷的食材清单。
+请按从上到下的顺序，找出所有商品图，并把每个商品图和旁边的商品名、数量、实付价格对应起来。
 
-请提取能进入家庭厨房库存的项目。不要识别厨具、包装袋噪声、优惠券、店名、退款提示、按钮文案。
+只返回这些字段：
+- name：商品名
+- qty：数量，没有看到就填 1
+- paidPrice：实付价格，没有看到就省略
+- pixelRect：商品图本身的像素框，不要框文字、价格、按钮、空白或整行
+- imageRect：商品图本身的归一化框
+- confidence：0 到 1
 
-对订单截图：
-- name：商品名，去掉“秒杀”“空运直达”等营销词，但保留核心品名和规格关键信息。
-- qty：购买数量，优先读取“数量：1”这类字段。
-- paidPrice：该商品右侧或附近的“实付 ¥xx.xx”，是这一行商品的实付总价，不要用退款金额。
-- unitPrice：读取“单价：¥xx/盒”这类字段，没有就省略。
-- spec：读取“规格：450g”“1L”“约500g”等。
-- productionDate：只有截图明确写出生产日期时返回 yyyy-mm-dd；如“26年5月29日”在今天为 2026 年时应写 "2026-05-29"。
-- imageRect：商品缩略图/实物图在整张截图中的归一化边界框，格式 {"x":0~1,"y":0~1,"w":0~1,"h":0~1}，用于裁出物品图片。
-- tags：请按品类打标签，优先从这些标签选择 1-3 个：食品、食材、生鲜、肉禽蛋奶、蔬菜、水果、主食、乳制品、饮料、零食、调味品、冷冻。
+pixelRect 和 imageRect 的 x/y 都是左上角，w/h 都是宽高。
+pixelRect 相对于当前输入图片的像素坐标。
+imageRect 相对于当前输入图片归一化。
 
-保质期/到期日只有图片明确写出时才返回，不要估算。数量不确定时 qty=1。
-
-只返回 JSON，不要 Markdown：
+只返回 JSON：
 {
   "items": [
     {
       "name": "潭牛冷鲜文昌鸡半只切块 450g",
       "qty": 1,
-      "unit": "盒",
-      "spec": "450g",
       "paidPrice": 36.51,
-      "unitPrice": 38.9,
-      "tags": ["生鲜", "肉禽蛋奶"],
-      "expiry": "2026-06-12",
-      "productionDate": "2026-05-29",
-      "openedShelfDays": null,
-      "minStock": 2,
-      "note": "订单截图导入",
-      "imageRect": {"x":0.07,"y":0.30,"w":0.13,"h":0.08},
+      "pixelRect": {"x":57,"y":241,"w":140,"h":140},
+      "imageRect": {"x":0.07,"y":0.30,"w":0.13,"h":0.06},
       "confidence": 0.82
     }
   ]
@@ -537,7 +585,7 @@ function normalizeImportTags(name, rawTags) {
     })
         .slice(0, 4);
 }
-function sanitizeImportDraft(raw) {
+function sanitizeImportDraft(raw, size, offsetY = 0) {
     const obj = (raw && typeof raw === 'object' ? raw : {});
     const name = text(obj.name, 60);
     if (!name)
@@ -556,11 +604,11 @@ function sanitizeImportDraft(raw) {
         openedShelfDays: nullablePositiveInteger(obj.openedShelfDays, 3650),
         minStock: nullablePositiveInteger(obj.minStock, 999),
         note: text(obj.note, 120),
-        imageRect: rect(obj.imageRect),
+        imageRect: size ? pixelRect(obj.pixelRect, size, offsetY) || rect(obj.imageRect) : rect(obj.imageRect),
         confidence: clampConfidence(obj.confidence, 0.65),
     };
 }
-function sanitizeImportResult(raw) {
+function sanitizeImportResult(raw, size, offsetY = 0) {
     const source = Array.isArray(raw)
         ? raw
         : raw && typeof raw === 'object' && Array.isArray(raw.items)
@@ -568,7 +616,7 @@ function sanitizeImportResult(raw) {
             : [];
     const seen = new Set();
     return source
-        .map(sanitizeImportDraft)
+        .map((entry) => sanitizeImportDraft(entry, size, offsetY))
         .filter((draft) => !!draft)
         .filter((draft) => {
         const key = draft.name.toLowerCase();
@@ -579,11 +627,49 @@ function sanitizeImportResult(raw) {
     })
         .slice(0, 30);
 }
+async function getImageSize(blob) {
+    const bitmap = await createImageBitmap(blob);
+    const size = { width: bitmap.width, height: bitmap.height };
+    bitmap.close?.();
+    return size;
+}
+async function splitImageChunks(blob, size) {
+    if (size.height <= 1300)
+        return [{ blob, offsetY: 0, height: size.height }];
+    const chunkHeight = 1000;
+    const overlap = 260;
+    const step = chunkHeight - overlap;
+    const bitmap = await createImageBitmap(blob);
+    const chunks = [];
+    for (let y = 0; y < size.height; y += step) {
+        const height = Math.min(chunkHeight, size.height - y);
+        const canvas = document.createElement('canvas');
+        canvas.width = size.width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(bitmap, 0, y, size.width, height, 0, 0, size.width, height);
+        const chunkBlob = await new Promise((resolve) => canvas.toBlob((next) => resolve(next), 'image/jpeg', 0.9));
+        chunks.push({ blob: chunkBlob, offsetY: y, height });
+        if (y + height >= size.height)
+            break;
+    }
+    bitmap.close?.();
+    return chunks;
+}
+async function callMiniMaxKitchenImportChunks(storage, blob, prompt) {
+    const size = await getImageSize(blob);
+    const chunks = await splitImageChunks(blob, size);
+    const model = (await (0, indexeddb_1.getConfig)(storage, 'minimaxModel', '')) || DEFAULT_MINIMAX_MODEL;
+    const all = [];
+    for (const chunk of chunks) {
+        const result = await callVisionCompat('minimax', MINIMAX_API, model, chunk.blob, prompt);
+        all.push(...sanitizeImportResult(parseJson(result), size, chunk.offsetY));
+    }
+    return suppressOverlappingDrafts(all).slice(0, 30);
+}
 async function suggestKitchenImportFromImage(storage, blob) {
     const prompt = buildKitchenImportPrompt();
     try {
-        const result = await callVisionCompat('minimax', MINIMAX_API, (await (0, indexeddb_1.getConfig)(storage, 'minimaxModel', '')) || DEFAULT_MINIMAX_MODEL, blob, prompt);
-        const drafts = sanitizeImportResult(parseJson(result));
+        const drafts = await callMiniMaxKitchenImportChunks(storage, blob, prompt);
         if (drafts.length)
             return drafts;
     }
@@ -591,5 +677,5 @@ async function suggestKitchenImportFromImage(storage, blob) {
         console.warn('MiniMax kitchen image import failed, fallback:', err);
     }
     const result = await callVisionCompat('openrouter', OPENROUTER_API, (await (0, indexeddb_1.getConfig)(storage, 'openrouterModel', '')) || undefined, blob, prompt);
-    return sanitizeImportResult(parseJson(result));
+    return sanitizeImportResult(parseJson(result), await getImageSize(blob));
 }

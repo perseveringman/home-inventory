@@ -33,24 +33,53 @@ async function compressImage(file, maxSide = 1600, quality = 0.82) {
     bitmap.close?.();
     return { blob, width, height };
 }
-async function cropItemFromPhoto(photoBlob, rect, maxSize = 280) {
+async function cropItemFromPhoto(photoBlob, rect, maxSizeOrOptions = 280) {
     try {
+        const options = typeof maxSizeOrOptions === 'number'
+            ? { maxSize: maxSizeOrOptions }
+            : maxSizeOrOptions || {};
+        const maxSize = Math.max(1, Math.round(options.maxSize || 280));
+        const paddingRatio = Math.max(0, Math.min(1, options.paddingRatio || 0));
         const bmp = await createImageBitmap(photoBlob);
-        const sx = Math.max(0, rect.x * bmp.width);
-        const sy = Math.max(0, rect.y * bmp.height);
-        const sw = Math.min(bmp.width - sx, rect.w * bmp.width);
-        const sh = Math.min(bmp.height - sy, rect.h * bmp.height);
+        let sx = Math.max(0, rect.x * bmp.width);
+        let sy = Math.max(0, rect.y * bmp.height);
+        let sw = Math.min(bmp.width - sx, rect.w * bmp.width);
+        let sh = Math.min(bmp.height - sy, rect.h * bmp.height);
+        if (paddingRatio > 0) {
+            const padX = sw * paddingRatio;
+            const padY = sh * paddingRatio;
+            const x2 = Math.min(bmp.width, sx + sw + padX);
+            const y2 = Math.min(bmp.height, sy + sh + padY);
+            sx = Math.max(0, sx - padX);
+            sy = Math.max(0, sy - padY);
+            sw = x2 - sx;
+            sh = y2 - sy;
+        }
         if (sw < 24 || sh < 24) {
             bmp.close();
             return null;
         }
-        const scale = Math.min(1, maxSize / Math.max(sw, sh));
-        const dw = Math.max(1, Math.round(sw * scale));
-        const dh = Math.max(1, Math.round(sh * scale));
         const c = document.createElement('canvas');
-        c.width = dw;
-        c.height = dh;
-        c.getContext('2d').drawImage(bmp, sx, sy, sw, sh, 0, 0, dw, dh);
+        if (options.contain) {
+            c.width = maxSize;
+            c.height = maxSize;
+            const ctx = c.getContext('2d');
+            ctx.fillStyle = options.background || '#ffffff';
+            ctx.fillRect(0, 0, maxSize, maxSize);
+            const scale = Math.min(maxSize / sw, maxSize / sh);
+            const dw = Math.max(1, Math.round(sw * scale));
+            const dh = Math.max(1, Math.round(sh * scale));
+            ctx.drawImage(bmp, sx, sy, sw, sh, Math.round((maxSize - dw) / 2), Math.round((maxSize - dh) / 2), dw, dh);
+        }
+        else {
+            const scale = Math.min(1, maxSize / Math.max(sw, sh));
+            const dw = Math.max(1, Math.round(sw * scale));
+            const dh = Math.max(1, Math.round(sh * scale));
+            c.width = dw;
+            c.height = dh;
+            const ctx = c.getContext('2d');
+            ctx.drawImage(bmp, sx, sy, sw, sh, 0, 0, dw, dh);
+        }
         bmp.close();
         return await new Promise((r) => c.toBlob((b) => r(b), 'image/jpeg', 0.82));
     }
