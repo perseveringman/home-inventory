@@ -21,13 +21,17 @@ type ScanCandidatePatch = Partial<
 >;
 
 function estimateConfidence(kind: ScanCandidate['kind'], box: DetectedBox): number {
+  if (Number.isFinite(box.confidence)) {
+    return Math.max(0.35, Math.min(0.96, Number(box.confidence)));
+  }
   const vague = /未知|物品|瓶子|盒子|区域|柜子\s*\d*$/i.test(box.name);
   const base = kind === 'cabinet' ? 0.82 : 0.74;
   const sizeSignal = Math.min(0.12, Math.max(0, (box.rect.w * box.rect.h - 0.02) * 0.4));
   return Math.max(0.35, Math.min(0.96, base + sizeSignal - (vague ? 0.18 : 0)));
 }
 
-function candidateReason(kind: ScanCandidate['kind'], confidence: number): string {
+function candidateReason(kind: ScanCandidate['kind'], confidence: number, box?: DetectedBox): string {
+  if (box?.reason) return box.reason;
   if (confidence < 0.6) return kind === 'cabinet' ? '边界或命名不确定，建议复核' : '外观较泛，建议确认名称';
   return kind === 'cabinet' ? '识别到独立可收纳区域' : '识别到可单独记录的物品';
 }
@@ -41,7 +45,7 @@ function toCandidate(kind: ScanCandidate['kind'], box: DetectedBox): ScanCandida
     rect: box.rect,
     emoji: box.emoji,
     confidence,
-    aiReason: candidateReason(kind, confidence),
+    aiReason: candidateReason(kind, confidence, box),
     reviewStatus: 'pending',
     createdAt: Date.now(),
   };

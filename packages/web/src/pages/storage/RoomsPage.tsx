@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../../stores/useStore';
 import { Header } from '../../components/Header';
@@ -11,6 +12,8 @@ import { RoomMenu } from '../../components/RoomMenu';
 import LooseListDialog from '../modals/LooseListDialog';
 import { PinIcon, roomIconName } from '../../components/PinIcon';
 import { Glyph } from '../../components/Glyph';
+import { pickImage } from '../../lib/nativeImage';
+import { NativeItemDiscoverySheet } from '../../components/NativeItemDiscoverySheet';
 
 export default function RoomsPage() {
   const navigate = useNavigate();
@@ -19,6 +22,8 @@ export default function RoomsPage() {
   const items = useStore((s) => s.items);
   const cabinets = useStore((s) => s.cabinets);
   const del = useStore((s) => s.del);
+  const [nativeBusy, setNativeBusy] = useState(false);
+  const [nativeFile, setNativeFile] = useState<Blob | null>(null);
 
   const roomStats = (r: Room) => {
     const photoCnt = photos.filter((p) => p.roomId === r.id).length;
@@ -50,18 +55,43 @@ export default function RoomsPage() {
     toast('已删除');
   };
 
+  const runNativeDiscovery = async () => {
+    if (nativeBusy) return;
+    setNativeBusy(true);
+    try {
+      const file = await pickImage({ source: 'prompt' });
+      if (!file) return;
+      setNativeFile(file);
+    } catch (err: any) {
+      console.error(err);
+      toast('打开图片失败：' + (err?.message || 'unknown'), 3200);
+    } finally {
+      setNativeBusy(false);
+    }
+  };
+
   return (
     <div>
       <Header
         title="我的房间"
         subtitle={`${rooms.length} 个房间`}
         actions={
-          <button
-            onClick={addRoom}
-            className="px-3.5 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"
-          >
-            <Glyph name="plus" size={15} strokeWidth={1.8} />新建
-          </button>
+          <div className="inline-flex items-center gap-2">
+            <button
+              onClick={runNativeDiscovery}
+              disabled={nativeBusy}
+              className="px-3 py-2 bg-white hover:bg-paper-100 text-ink-700 border border-paper-300 rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5 disabled:opacity-60"
+            >
+              <Glyph name="sparkle" size={15} strokeWidth={1.8} />
+              {nativeBusy ? '发现中' : '本机发现'}
+            </button>
+            <button
+              onClick={addRoom}
+              className="px-3.5 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-[13px] font-medium inline-flex items-center gap-1.5"
+            >
+              <Glyph name="plus" size={15} strokeWidth={1.8} />新建
+            </button>
+          </div>
         }
       />
 
@@ -137,6 +167,13 @@ export default function RoomsPage() {
           </div>
         )}
       </div>
+      {nativeFile && (
+        <NativeItemDiscoverySheet
+          file={nativeFile}
+          roomId={GLOBAL_ROOM_ID}
+          onClose={() => setNativeFile(null)}
+        />
+      )}
     </div>
   );
 }

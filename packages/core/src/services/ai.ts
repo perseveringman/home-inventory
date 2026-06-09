@@ -79,6 +79,8 @@ export interface DetectedBox {
   name: string;
   rect: { x: number; y: number; w: number; h: number };
   emoji?: string;
+  confidence?: number;
+  reason?: string;
 }
 
 export interface DetectionResult {

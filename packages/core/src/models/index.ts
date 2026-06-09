@@ -68,7 +68,16 @@ export interface ScanSession {
 }
 
 export type RecognitionTaskStatus = 'queued' | 'processing' | 'completed' | 'failed';
-export type RecognitionTaskSource = 'camera' | 'gallery' | 'photo';
+export type RecognitionTaskSource = 'camera' | 'gallery' | 'photo' | 'native-items';
+
+export interface RecognitionTaskNativeItem {
+  id: ID;
+  image: Blob;
+  rect?: Rect;
+  rotation?: number;
+  confidence?: number;
+  nameHint?: string;
+}
 
 export interface RecognitionTask {
   id: ID;
@@ -84,6 +93,7 @@ export interface RecognitionTask {
     cabinets: number;
     items: number;
   };
+  nativeItems?: RecognitionTaskNativeItem[];
   errorMessage?: string;
 }
 

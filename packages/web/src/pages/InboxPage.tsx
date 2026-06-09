@@ -295,6 +295,7 @@ export default function InboxPage() {
             {activeRecognitionTasks.map((task) => {
               const photo = photos.find((item) => item.id === task.photoId);
               const failed = task.status === 'failed';
+              const nativeItems = task.source === 'native-items';
               return (
                 <div
                   key={task.id}
@@ -303,16 +304,22 @@ export default function InboxPage() {
                   <BlobImage blob={photo?.blob || null} emoji="spark" className="w-16 h-16 rounded-xl object-cover bg-brand-50" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <div className="font-medium truncate">{roomLabel(task.roomId)}</div>
+                      <div className="font-medium truncate">
+                        {nativeItems ? '物品资料识别' : roomLabel(task.roomId)}
+                      </div>
                       <span className={`text-[11px] px-2 py-0.5 rounded-full ${failed ? 'bg-red-50 text-red-600' : 'bg-brand-50 text-brand-700'}`}>
                         {TASK_STATUS_LABEL[task.status]}
                       </span>
                     </div>
                     <div className="text-xs text-ink-500 mt-0.5">
                       {task.status === 'queued'
-                        ? '已拍照，等待 AI 处理'
+                        ? nativeItems
+                          ? `${task.candidateCounts?.items || task.nativeItems?.length || 0} 件物品等待后台识别`
+                          : '已拍照，等待 AI 处理'
                         : task.status === 'processing'
-                          ? 'AI 正在识别这筐物品'
+                          ? nativeItems
+                            ? 'AI 正在识别名称、保质期和标签'
+                            : 'AI 正在识别这筐物品'
                           : task.errorMessage || '识别失败，请重试'}
                     </div>
                     <div className="text-[11px] text-ink-400 mt-1">

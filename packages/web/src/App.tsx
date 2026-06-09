@@ -47,7 +47,12 @@ function RecognitionTaskRunner() {
         await reloadAll();
         const finished = await runRecognitionTask(getStorage(), nextTask.id);
         if (finished.status === 'completed') {
-          toast('照片识别完成，已进入收集箱', 3000);
+          toast(
+            finished.source === 'native-items'
+              ? '物品资料识别完成，已进入收集箱'
+              : '照片识别完成，已进入收集箱',
+            3000
+          );
         } else if (finished.status === 'failed') {
           toast('识别任务失败，可在待处理页重试', 3000);
         }
