@@ -6,12 +6,14 @@ import {
   applyPlacementPlan,
   computeItemEvents,
   computeSubscriptionEvents,
+  getRecognitionModelProfile,
   renewSubDue,
   resetRecognitionTask,
   suggestPlacementPlan,
   type PlacementPlan,
   type ReminderEvent,
   type ReminderKind,
+  type RecognitionTask,
   type Subscription,
 } from '@home-inventory/core';
 import { BlobImage } from '../components/BlobImage';
@@ -39,6 +41,23 @@ const TASK_STATUS_LABEL = {
   failed: '失败',
   completed: '已完成',
 } as const;
+
+function formatElapsed(ms?: number): string {
+  if (!ms || ms <= 0) return '';
+  return `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s`;
+}
+
+function formatRecognitionSummary(task?: RecognitionTask): string {
+  if (!task) return '';
+  const profile = task.recognitionProfile ? getRecognitionModelProfile(task.recognitionProfile) : null;
+  const model =
+    profile && profile.id !== 'auto'
+      ? profile.shortLabel
+      : task.recognitionModel || (profile ? profile.shortLabel : '');
+  const tier = task.recognitionActualServiceTier || task.recognitionServiceTier;
+  const tierLabel = tier === 'fast' ? '低延迟' : tier === 'default' ? '常规' : tier || '';
+  return [model, tierLabel, formatElapsed(task.recognitionElapsedMs)].filter(Boolean).join(' · ');
+}
 
 export default function InboxPage() {
   const navigate = useNavigate();
@@ -296,6 +315,7 @@ export default function InboxPage() {
               const photo = photos.find((item) => item.id === task.photoId);
               const failed = task.status === 'failed';
               const nativeItems = task.source === 'native-items';
+              const recognitionSummary = formatRecognitionSummary(task);
               return (
                 <div
                   key={task.id}
@@ -322,6 +342,9 @@ export default function InboxPage() {
                             : 'AI 正在识别这筐物品'
                           : task.errorMessage || '识别失败，请重试'}
                     </div>
+                    {recognitionSummary && (
+                      <div className="text-[11px] text-brand-700 mt-1">{recognitionSummary}</div>
+                    )}
                     <div className="text-[11px] text-ink-400 mt-1">
                       {new Date(task.createdAt).toLocaleString()}
                     </div>
@@ -356,6 +379,8 @@ export default function InboxPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {pendingReviewSessions.map((session) => {
               const photo = photos.find((item) => item.id === session.photoId);
+              const finishedTask = recognitionTasks.find((task) => task.scanSessionId === session.id);
+              const recognitionSummary = formatRecognitionSummary(finishedTask);
               const liveCandidates = session.candidates.filter((candidate) => candidate.reviewStatus !== 'rejected');
               const cabinetCount = liveCandidates.filter((candidate) => candidate.kind === 'cabinet').length;
               const itemCount = liveCandidates.filter((candidate) => candidate.kind === 'item').length;
@@ -371,6 +396,9 @@ export default function InboxPage() {
                     <div className="text-xs text-ink-500 mt-0.5">
                       {cabinetCount} 个柜子 · {itemCount} 件物品候选
                     </div>
+                    {recognitionSummary && (
+                      <div className="text-[11px] text-brand-700 mt-1">{recognitionSummary}</div>
+                    )}
                     <div className="text-[11px] text-brand-700 mt-1">整理这筐</div>
                   </div>
                   <span className="text-ink-400">›</span>

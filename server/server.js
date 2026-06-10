@@ -6,6 +6,7 @@
  *   GET  /healthz              健康检查（无鉴权）
  *   GET  /api/ai/status        各 provider 是否配置
  *   POST /api/ai/minimax       MiniMax M3 转发
+ *   POST /api/ai/doubao        火山方舟 / 豆包转发
  *   POST /api/ai/openrouter    OpenRouter 转发
  *   POST /api/ai/deepseek      DeepSeek 转发
  *   POST /api/ai/claude        Claude 转发
@@ -32,6 +33,7 @@ const API_DIR = path.resolve(__dirname, '..', 'api', 'ai');
 const handlers = {
   status: require(path.join(API_DIR, 'status.js')),
   minimax: require(path.join(API_DIR, 'minimax.js')),
+  doubao: require(path.join(API_DIR, 'doubao.js')),
   openrouter: require(path.join(API_DIR, 'openrouter.js')),
   deepseek: require(path.join(API_DIR, 'deepseek.js')),
   claude: require(path.join(API_DIR, 'claude.js')),
@@ -101,7 +103,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // 路由分发
-  const match = pathname.match(/^\/api\/ai\/(status|minimax|openrouter|deepseek|claude)$/);
+  const match = pathname.match(/^\/api\/ai\/(status|minimax|doubao|openrouter|deepseek|claude)$/);
   if (match) {
     const handler = handlers[match[1]];
     try {

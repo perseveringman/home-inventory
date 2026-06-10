@@ -14,6 +14,14 @@ import QuickAddDialog from '../pages/modals/QuickAddDialog';
 import { ChatDrawer } from './ChatDrawer';
 import { PinIcon } from './PinIcon';
 import { pickImage } from '../lib/nativeImage';
+import { captureNativeItemsIntoInbox } from '../lib/nativeItemCapture';
+import { canUseNativeVision } from '../lib/nativeVision';
+import { NativeItemDiscoverySheet } from './NativeItemDiscoverySheet';
+
+interface NativeDiscoveryInput {
+  file: Blob;
+  roomId: string;
+}
 
 export function FabDock() {
   const location = useLocation();
@@ -23,6 +31,7 @@ export function FabDock() {
   const put = useStore((s) => s.put);
   const [busy, setBusy] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [nativeDiscovery, setNativeDiscovery] = useState<NativeDiscoveryInput | null>(null);
 
   const targetRoomId = () => {
     const roomMatch = location.pathname.match(/^\/room\/([^/]+)/);
@@ -61,11 +70,38 @@ export function FabDock() {
     }
   };
 
+  const captureNativeItems = async () => {
+    setBusy(true);
+    try {
+      const result = await captureNativeItemsIntoInbox(targetRoomId() || GLOBAL_ROOM_ID);
+      if (!result) return;
+      await reloadAll();
+      toast(`已放入收集箱 ${result.items.length} 件`, 3000);
+      navigate('/inbox');
+    } catch (err: any) {
+      console.error(err);
+      toast('本机识别失败：' + (err?.message || 'unknown'), 3000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const triggerPick = async (source: 'camera' | 'gallery') => {
     if (busy) return;
     try {
+      if (source === 'camera' && canUseNativeVision()) {
+        await captureNativeItems();
+        return;
+      }
       const file = await pickImage({ source });
       if (!file) return;
+      if (canUseNativeVision()) {
+        setNativeDiscovery({
+          file,
+          roomId: targetRoomId() || GLOBAL_ROOM_ID,
+        });
+        return;
+      }
       await enqueueRecognition(file, source);
     } catch (err: any) {
       console.error(err);
@@ -86,6 +122,13 @@ export function FabDock() {
         <button onClick={() => triggerPick('camera')} disabled={busy} className="fab-btn" title="拍照加入识别队列" aria-label="拍照加入识别队列">{busy ? <span className="fab-dot" /> : <PinIcon name="camera" size={32} tile={false} />}</button>
       </div>
       <ChatDrawer open={chatOpen} onClose={() => setChatOpen(false)} />
+      {nativeDiscovery && (
+        <NativeItemDiscoverySheet
+          file={nativeDiscovery.file}
+          roomId={nativeDiscovery.roomId}
+          onClose={() => setNativeDiscovery(null)}
+        />
+      )}
     </>
   );
 }

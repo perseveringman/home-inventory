@@ -11,6 +11,7 @@
  */
 
 import { Capacitor } from '@capacitor/core';
+import { canUseNativeVision, capturePhotoWithNativeVision } from './nativeVision';
 
 export type PickSource = 'camera' | 'gallery' | 'prompt';
 
@@ -78,6 +79,12 @@ export async function pickImage(options: PickOptions = {}): Promise<File | null>
   const source = options.source || 'prompt';
 
   if (isNativePlatform()) {
+    if (source === 'camera' && canUseNativeVision()) {
+      const blob = await capturePhotoWithNativeVision();
+      if (!blob) return null;
+      return new File([blob], `photo-${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' });
+    }
+
     // 动态 import 避免在纯 web 构建里引入原生插件代码
     const { Camera, CameraSource, CameraResultType } = await import('@capacitor/camera');
     const sourceMap: Record<PickSource, any> = {

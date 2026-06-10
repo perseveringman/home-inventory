@@ -3,14 +3,17 @@ import {
   bindSyncDirectory,
   doSyncNow,
   exportZip,
+  getRecognitionModelProfile,
   getConfig,
   importZip,
   isFileSystemAccessSupported,
   loadDemoData,
+  RECOGNITION_MODEL_PROFILES,
   setConfig,
   setUserApiKey,
   unbindSyncDirectory,
   type AiProvider,
+  type RecognitionModelProfile,
 } from '@home-inventory/core';
 import { Header } from '../components/Header';
 import { toast } from '../components/Toast';
@@ -33,6 +36,13 @@ const AI_PROVIDERS: ProviderMeta[] = [
     configKey: 'userApiKey_minimax',
     hint: 'MiniMax M3 多模态主力，用于柜子/物品视觉识别、图片物品建议和订阅截图识别。',
     placeholder: 'sk-cp-...',
+  },
+  {
+    provider: 'doubao',
+    label: '火山方舟 / Doubao',
+    configKey: 'userApiKey_doubao',
+    hint: '用于 Doubao-Seed-2.0-lite / doubao-seed-1.6-lite 视觉识别测速；低延迟档会发送 service_tier=fast。',
+    placeholder: 'ARK API Key',
   },
   {
     provider: 'openrouter',
@@ -71,17 +81,21 @@ export default function SettingsPage() {
   const [lastSync, setLastSync] = useState('');
   const [keyDrafts, setKeyDrafts] = useState<Record<AiProvider, string>>({
     minimax: '',
+    doubao: '',
     openrouter: '',
     deepseek: '',
     claude: '',
   });
   const [revealedKeys, setRevealedKeys] = useState<Record<AiProvider, boolean>>({
     minimax: false,
+    doubao: false,
     openrouter: false,
     deepseek: false,
     claude: false,
   });
   const [keysLoaded, setKeysLoaded] = useState(false);
+  const [recognitionProfile, setRecognitionProfile] = useState<RecognitionModelProfile>('auto');
+  const [recognitionProfileLoaded, setRecognitionProfileLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,6 +114,19 @@ export default function SettingsPage() {
         return next;
       });
       setKeysLoaded(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const value = await getConfig<string>(getStorage(), 'recognitionModelProfile', 'auto');
+      if (cancelled) return;
+      setRecognitionProfile(getRecognitionModelProfile(value).id as RecognitionModelProfile);
+      setRecognitionProfileLoaded(true);
     })();
     return () => {
       cancelled = true;
@@ -127,6 +154,14 @@ export default function SettingsPage() {
     setUserApiKey(meta.provider, '');
     setKeyDrafts((prev) => ({ ...prev, [meta.provider]: '' }));
     toast(`${meta.label} key 已清空`);
+  };
+
+  const updateRecognitionProfile = async (value: string) => {
+    const meta = getRecognitionModelProfile(value);
+    const next = meta.id as RecognitionModelProfile;
+    setRecognitionProfile(next);
+    await setConfig(getStorage(), 'recognitionModelProfile', next);
+    toast(`识别模型已切换：${meta.label}`);
   };
 
   const storageMB = ((photos.reduce((sum, photo) => sum + (photo.blob?.size || 0), 0) + items.reduce((sum, item) => sum + (item.image?.size || 0), 0)) / 1024 / 1024).toFixed(2);
@@ -235,6 +270,31 @@ export default function SettingsPage() {
                 <div className="text-xs text-ink-500">{label}</div>
               </div>
             ))}
+          </div>
+        </section>
+
+        <section className="bg-white rounded-2xl shadow-soft p-5">
+          <h2 className="font-semibold mb-1 inline-flex items-center gap-2"><PinIcon name="spark" size={30} />LLM 识别模型测试</h2>
+          <p className="text-xs text-ink-500 mb-3">
+            这里控制照片入队后的柜子/物品识别模型。Doubao-Seed-2.0-lite 的低延迟档会按火山方舟 Chat API 发送 service_tier=fast。
+          </p>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <label className="text-xs text-ink-500 block mb-1.5">当前识别模型</label>
+            <select
+              value={recognitionProfile}
+              onChange={(event) => updateRecognitionProfile(event.target.value)}
+              disabled={!recognitionProfileLoaded}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm"
+            >
+              {RECOGNITION_MODEL_PROFILES.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.label}
+                </option>
+              ))}
+            </select>
+            <div className="text-[11px] text-ink-500 mt-2">
+              {getRecognitionModelProfile(recognitionProfile).hint}
+            </div>
           </div>
         </section>
 

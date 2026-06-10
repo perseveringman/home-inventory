@@ -40,7 +40,7 @@ function localApiPlugin() {
       server.middlewares.use('/api/ai', async (req, res, next) => {
         const pathname = new URL(req.url || '/', 'http://local.dev').pathname;
         const endpoint = pathname.replace(/^\/+/, '').replace(/\/+$/, '');
-        if (!['status', 'minimax', 'openrouter', 'deepseek', 'claude'].includes(endpoint)) {
+        if (!['status', 'minimax', 'doubao', 'openrouter', 'deepseek', 'claude'].includes(endpoint)) {
           next();
           return;
         }

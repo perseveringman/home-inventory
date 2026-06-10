@@ -31,6 +31,7 @@ setApiAuthToken(import.meta.env.VITE_API_PROXY_TOKEN);
 
 const USER_KEY_CONFIG_KEYS: Record<AiProvider, string> = {
   minimax: 'userApiKey_minimax',
+  doubao: 'userApiKey_doubao',
   openrouter: 'userApiKey_openrouter',
   deepseek: 'userApiKey_deepseek',
   claude: 'userApiKey_claude',

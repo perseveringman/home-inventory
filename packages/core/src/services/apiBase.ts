@@ -9,7 +9,7 @@
  * 当独立后端启用了 AI_PROXY_TOKEN 时，前端通过 setApiAuthToken() 注入；
  * 业务层用 apiAuthHeaders() 把 Authorization 头合并进 fetch 请求。
  *
- * 用户也可以在 app 设置页填写自己的 API key（MiniMax / OpenRouter / DeepSeek / Claude），
+ * 用户也可以在 app 设置页填写自己的 API key（MiniMax / Doubao / OpenRouter / DeepSeek / Claude），
  * 填了之后调用 getUserApiKey(provider) 拿到值，业务层据此直连官方 API，
  * 跳过自建后端代理。
  */
@@ -17,9 +17,10 @@
 let apiBase = '';
 let apiAuthToken = '';
 
-export type AiProvider = 'minimax' | 'openrouter' | 'deepseek' | 'claude';
+export type AiProvider = 'minimax' | 'doubao' | 'openrouter' | 'deepseek' | 'claude';
 const userApiKeys: Record<AiProvider, string> = {
   minimax: '',
+  doubao: '',
   openrouter: '',
   deepseek: '',
   claude: '',
@@ -69,12 +70,17 @@ export function getUserApiKey(provider: AiProvider): string {
 
 export function hasAnyUserApiKey(): boolean {
   return Boolean(
-    userApiKeys.minimax || userApiKeys.openrouter || userApiKeys.deepseek || userApiKeys.claude
+    userApiKeys.minimax ||
+      userApiKeys.doubao ||
+      userApiKeys.openrouter ||
+      userApiKeys.deepseek ||
+      userApiKeys.claude
   );
 }
 
 export function clearAllUserApiKeys(): void {
   userApiKeys.minimax = '';
+  userApiKeys.doubao = '';
   userApiKeys.openrouter = '';
   userApiKeys.deepseek = '';
   userApiKeys.claude = '';

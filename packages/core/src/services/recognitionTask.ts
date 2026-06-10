@@ -6,9 +6,10 @@ import {
   type RecognitionTaskNativeItem,
   type RecognitionTaskSource,
 } from '../models';
+import { getConfig } from '../storage/indexeddb';
 import type { Storage } from '../storage/types';
 import { uid } from '../utils/id';
-import { detectCabinetsAndItems } from './ai';
+import { detectCabinetsAndItems, getRecognitionModelProfile } from './ai';
 import { logAction } from './actionLog';
 import { ensureGlobalLooseCabinet, ensureLooseCabinet } from './cabinet';
 import { suggestItemDraft, type ItemDraftSuggestion } from './itemSuggestion';
@@ -16,6 +17,10 @@ import { createScanSessionFromDetection } from './scanReview';
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err || 'unknown');
+}
+
+function formatSeconds(ms: number): string {
+  return `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s`;
 }
 
 export async function createRecognitionTask(
@@ -232,12 +237,33 @@ export async function runRecognitionTask(
     return failed;
   }
 
+  let recognitionProfile = '';
+  let recognitionStartedAt = 0;
+
   try {
     if (processingTask.source === 'native-items') {
       return await runNativeItemRecognitionTask(storage, processingTask, photo);
     }
 
-    const result = await detectCabinetsAndItems(photo.blob, { width: photo.width, height: photo.height }, {});
+    const [profile, minimaxModel, openrouterModel] = await Promise.all([
+      getConfig<string>(storage, 'recognitionModelProfile', 'auto'),
+      getConfig<string>(storage, 'minimaxModel', ''),
+      getConfig<string>(storage, 'openrouterModel', ''),
+    ]);
+    recognitionProfile = profile;
+    recognitionStartedAt = Date.now();
+    const result = await detectCabinetsAndItems(
+      photo.blob,
+      { width: photo.width, height: photo.height },
+      {
+        recognitionModelProfile: profile,
+        minimaxModel: minimaxModel || undefined,
+        openrouterModel: openrouterModel || undefined,
+      }
+    );
+    const recognitionElapsedMs = Date.now() - recognitionStartedAt;
+    const profileMeta = getRecognitionModelProfile(profile);
+    const detectionMeta = result.meta;
     const session = await createScanSessionFromDetection(storage, photo, result);
     const completed: RecognitionTask = {
       ...processingTask,
@@ -248,23 +274,43 @@ export async function runRecognitionTask(
         cabinets: result.cabinets.length,
         items: result.items.length,
       },
+      recognitionProfile: detectionMeta?.profile || profileMeta.id,
+      recognitionProvider: detectionMeta?.provider,
+      recognitionModel: detectionMeta?.model,
+      recognitionServiceTier: detectionMeta?.requestedServiceTier,
+      recognitionActualServiceTier: detectionMeta?.actualServiceTier,
+      recognitionElapsedMs,
       errorMessage: undefined,
     };
     await storage.put('recognitionTasks', completed);
+    const modelLabel = detectionMeta?.label || profileMeta.label;
     await logAction(storage, {
       source: 'ai',
       type: 'recognition_task_completed',
-      summary: `识别任务完成：${result.cabinets.length} 个柜子 · ${result.items.length} 件物品`,
+      summary: `识别任务完成：${result.cabinets.length} 个柜子 · ${result.items.length} 件物品 · ${modelLabel} · ${formatSeconds(recognitionElapsedMs)}`,
       targetType: 'recognitionTask',
       targetId: completed.id,
-      after: { scanSessionId: session.id },
+      after: {
+        scanSessionId: session.id,
+        recognition: {
+          profile: completed.recognitionProfile,
+          provider: completed.recognitionProvider,
+          model: completed.recognitionModel,
+          serviceTier: completed.recognitionServiceTier,
+          actualServiceTier: completed.recognitionActualServiceTier,
+          elapsedMs: completed.recognitionElapsedMs,
+        },
+      },
     });
     return completed;
   } catch (err) {
+    const elapsed = recognitionStartedAt ? Date.now() - recognitionStartedAt : undefined;
     const failed: RecognitionTask = {
       ...processingTask,
       status: 'failed',
       completedAt: Date.now(),
+      recognitionProfile: recognitionProfile || processingTask.recognitionProfile,
+      recognitionElapsedMs: elapsed,
       errorMessage: errorMessage(err),
     };
     await storage.put('recognitionTasks', failed);

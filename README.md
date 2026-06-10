@@ -104,6 +104,7 @@ SHADOW_SESSION_SECRET=replace-with-a-long-random-string
 AI 请求统一走同源 Vercel Functions，浏览器不再保存或携带供应商 API Key：
 
 - `/api/ai/minimax`：MiniMax M3 多模态，用于图片识别、图片物品建议、订阅截图识别和文本备选
+- `/api/ai/doubao`：火山方舟 / Doubao Seed，用于 Doubao-Seed-2.0-lite 常规/低延迟与 doubao-seed-1.6-lite 识别测速
 - `/api/ai/openrouter`：OpenRouter / Gemini Vision，作为历史兼容和备选
 - `/api/ai/deepseek`：DeepSeek 文本对话和文本物品建议
 - `/api/ai/claude`：Claude Vision 备选
@@ -118,6 +119,9 @@ AI 请求统一走同源 Vercel Functions，浏览器不再保存或携带供应
 MINIMAX_API_KEY=sk-cp-xxx
 MINIMAX_MODEL=MiniMax-M3
 MINIMAX_BASE_URL=https://api.minimaxi.com/v1
+ARK_API_KEY=xxx
+ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+DOUBAO_MODEL=doubao-seed-2-0-lite-260215
 OPENROUTER_API_KEY=sk-or-v1-xxx
 OPENROUTER_MODEL=google/gemini-2.5-flash
 DEEPSEEK_API_KEY=sk-xxx

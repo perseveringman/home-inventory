@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
   GLOBAL_ROOM_ID,
@@ -17,6 +17,7 @@ import { Glyph } from './Glyph';
 
 type Step = 'boxes' | 'items';
 type ResizeMode = 'nw' | 'ne' | 'sw' | 'se';
+type RecognitionPhase = 'queued' | 'isolating' | 'outlining' | 'ready' | 'failed';
 
 interface Props {
   file: Blob;
@@ -35,6 +36,8 @@ interface CropDraft {
   originalUrl: string;
   cutoutBlob?: Blob;
   cutoutUrl?: string;
+  stickerBlob?: Blob;
+  stickerUrl?: string;
   backgroundRemoved: boolean;
   rotation: number;
   confidence?: number;
@@ -73,11 +76,12 @@ function clampRect(rect: Rect): Rect {
 }
 
 function itemBlob(item: CropDraft): Blob {
-  return item.backgroundRemoved && item.cutoutBlob ? item.cutoutBlob : item.originalBlob;
+  return item.stickerBlob || item.cutoutBlob || item.originalBlob;
 }
 
 function itemUrl(item: CropDraft): string {
-  return item.backgroundRemoved && item.cutoutUrl ? item.cutoutUrl : item.originalUrl;
+  if (!item.backgroundRemoved) return item.originalUrl;
+  return item.stickerUrl || item.cutoutUrl || item.originalUrl;
 }
 
 async function rotateBlob(blob: Blob, background?: string): Promise<Blob> {
@@ -101,22 +105,83 @@ async function removeItemBackground(blob: Blob): Promise<Blob | null> {
   return removeBackgroundWithNativeVision(blob);
 }
 
+function canvasToPngBlob(canvas: HTMLCanvasElement, fallback: Blob): Promise<Blob> {
+  return new Promise<Blob>((resolve) => canvas.toBlob((blob) => resolve(blob || fallback), 'image/png'));
+}
+
+async function addWhiteStickerOutline(blob: Blob): Promise<Blob> {
+  const bitmap = await createImageBitmap(blob);
+  const maxSide = Math.max(bitmap.width, bitmap.height);
+  const outline = Math.max(14, Math.round(maxSide * 0.055));
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width + outline * 2;
+  canvas.height = bitmap.height + outline * 2;
+  const ctx = canvas.getContext('2d')!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  const silhouette = document.createElement('canvas');
+  silhouette.width = bitmap.width;
+  silhouette.height = bitmap.height;
+  const silhouetteCtx = silhouette.getContext('2d')!;
+  silhouetteCtx.imageSmoothingEnabled = true;
+  silhouetteCtx.imageSmoothingQuality = 'high';
+  silhouetteCtx.drawImage(bitmap, 0, 0);
+  silhouetteCtx.globalCompositeOperation = 'source-in';
+  silhouetteCtx.fillStyle = '#ffffff';
+  silhouetteCtx.fillRect(0, 0, silhouette.width, silhouette.height);
+
+  const radii = [outline, outline * 0.72, outline * 0.44, outline * 0.22];
+  const steps = 36;
+  ctx.save();
+  ctx.globalAlpha = 0.98;
+  for (const radius of radii) {
+    for (let i = 0; i < steps; i += 1) {
+      const angle = (Math.PI * 2 * i) / steps;
+      ctx.drawImage(
+        silhouette,
+        outline + Math.cos(angle) * radius,
+        outline + Math.sin(angle) * radius
+      );
+    }
+  }
+  ctx.restore();
+  ctx.drawImage(bitmap, outline, outline);
+  bitmap.close?.();
+  return canvasToPngBlob(canvas, blob);
+}
+
+function phaseText(phase: RecognitionPhase): string {
+  if (phase === 'isolating') return '抠图中';
+  if (phase === 'outlining') return '描边中';
+  if (phase === 'ready') return '已完成';
+  if (phase === 'failed') return '保留原图';
+  return '等待中';
+}
+
 export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClose }: Props) {
   const reloadAll = useStore((s) => s.reloadAll);
+  const [instantPhotoUrl] = useState(() => URL.createObjectURL(file));
   const [step, setStep] = useState<Step>('boxes');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [backgroundBusy, setBackgroundBusy] = useState(false);
   const [error, setError] = useState('');
   const [photo, setPhoto] = useState<PhotoDraft | null>(null);
+  const [visualPhoto, setVisualPhoto] = useState<PhotoDraft | null>(null);
   const [boxes, setBoxes] = useState<BoxDraft[]>([]);
   const [activeBoxId, setActiveBoxId] = useState<string | null>(null);
   const [items, setItems] = useState<CropDraft[]>([]);
+  const [recognitionPhases, setRecognitionPhases] = useState<Record<string, RecognitionPhase>>({});
+  const [canReturnToBoxes, setCanReturnToBoxes] = useState(false);
   const [drag, setDrag] = useState<DragState | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const urlsRef = useRef<string[]>([]);
 
   const activeBox = useMemo(() => boxes.find((box) => box.id === activeBoxId), [activeBoxId, boxes]);
+  const readyItemCount = useMemo(() => items.filter((item) => item.stickerBlob).length, [items]);
+  const stagePhoto = visualPhoto || photo;
+  const stagePhotoUrl = stagePhoto?.url || instantPhotoUrl;
 
   const makeUrl = (blob: Blob) => {
     const url = URL.createObjectURL(blob);
@@ -128,26 +193,46 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
     let cancelled = false;
     setLoading(true);
     setError('');
-    setStep('boxes');
+    setStep('items');
     setItems([]);
+    setRecognitionPhases({});
+    setCanReturnToBoxes(false);
+    setVisualPhoto(null);
     setBoxes([]);
     setActiveBoxId(null);
 
     void (async () => {
       try {
+        const bitmap = await createImageBitmap(file).catch(() => null);
+        if (!cancelled && bitmap) {
+          setVisualPhoto({
+            blob: file,
+            url: instantPhotoUrl,
+            width: bitmap.width,
+            height: bitmap.height,
+          });
+          bitmap.close?.();
+        }
         const draft = await prepareNativeItemDiscovery(file);
         if (cancelled) return;
         const url = makeUrl(draft.blob);
+        const preparedPhoto = { blob: draft.blob, width: draft.width, height: draft.height, url };
         const nextBoxes = draft.boxes.map((box, index) => ({
           ...box,
           id: box.id || uid(),
           rect: clampRect(box.rect),
           nameHint: box.nameHint,
         }));
-        setPhoto({ blob: draft.blob, width: draft.width, height: draft.height, url });
+        setPhoto(preparedPhoto);
+        setVisualPhoto((current) => current || preparedPhoto);
         setBoxes(nextBoxes);
         setActiveBoxId(nextBoxes[0]?.id || null);
-        if (!nextBoxes.length) {
+        if (nextBoxes.length) {
+          setLoading(false);
+          void startItemProcessing(preparedPhoto, nextBoxes, false);
+        } else {
+          setStep('boxes');
+          setCanReturnToBoxes(true);
           setError('本机没有找到稳定物品框，可以点 + 手动添加。');
         }
       } catch (err: any) {
@@ -161,6 +246,10 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
       cancelled = true;
     };
   }, [file]);
+
+  useEffect(() => {
+    return () => URL.revokeObjectURL(instantPhotoUrl);
+  }, [instantPhotoUrl]);
 
   useEffect(() => {
     return () => {
@@ -240,8 +329,12 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
     setActiveBoxId(null);
   };
 
-  const makeCrops = async () => {
-    if (!photo || !boxes.length) {
+  const startItemProcessing = async (
+    sourcePhoto: PhotoDraft,
+    sourceBoxes: BoxDraft[],
+    allowBoxReturn: boolean
+  ) => {
+    if (!sourceBoxes.length) {
       setError('至少需要一个物品框。');
       return;
     }
@@ -249,21 +342,21 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
     setError('');
     try {
       const drafts: CropDraft[] = [];
-      for (let index = 0; index < boxes.length; index += 1) {
-        const box = boxes[index]!;
-        const crop = await cropItemFromPhoto(photo.blob, box.rect, {
+      for (let index = 0; index < sourceBoxes.length; index += 1) {
+        const box = sourceBoxes[index]!;
+        const crop = await cropItemFromPhoto(sourcePhoto.blob, box.rect, {
           maxSize: 860,
           paddingRatio: 0.08,
           contain: true,
           background: '#ffffff',
         });
         if (!crop) continue;
-        const url = makeUrl(crop);
+        const cropUrl = makeUrl(crop);
         drafts.push({
           id: uid(),
           rect: box.rect,
           originalBlob: crop,
-          originalUrl: url,
+          originalUrl: cropUrl,
           backgroundRemoved: false,
           rotation: 0,
           confidence: box.confidence,
@@ -271,14 +364,32 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
         });
       }
       if (!drafts.length) {
+        setStep('boxes');
+        setCanReturnToBoxes(true);
         setError('没有成功裁出物品图，请调整识别框。');
         return;
       }
+      setRecognitionPhases(
+        drafts.reduce<Record<string, RecognitionPhase>>((acc, item) => {
+          acc[item.id] = 'queued';
+          return acc;
+        }, {})
+      );
+      setCanReturnToBoxes(allowBoxReturn);
       setItems(drafts);
       setStep('items');
+      void processItemCutouts(drafts);
     } finally {
       setBusy(false);
     }
+  };
+
+  const makeCrops = async () => {
+    if (!photo || !boxes.length) {
+      setError('至少需要一个物品框。');
+      return;
+    }
+    await startItemProcessing(photo, boxes, true);
   };
 
   const rotateItem = async (itemId: string) => {
@@ -288,8 +399,10 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
     try {
       const originalBlob = await rotateBlob(target.originalBlob, '#ffffff');
       const cutoutBlob = target.cutoutBlob ? await rotateBlob(target.cutoutBlob) : undefined;
+      const stickerBlob = target.stickerBlob ? await rotateBlob(target.stickerBlob) : undefined;
       const originalUrl = makeUrl(originalBlob);
       const cutoutUrl = cutoutBlob ? makeUrl(cutoutBlob) : undefined;
+      const stickerUrl = stickerBlob ? makeUrl(stickerBlob) : undefined;
       setItems((current) =>
         current.map((item) =>
           item.id === itemId
@@ -299,6 +412,8 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
                 originalUrl,
                 cutoutBlob,
                 cutoutUrl,
+                stickerBlob,
+                stickerUrl,
                 rotation: (item.rotation + 90) % 360,
               }
             : item
@@ -315,9 +430,67 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
       if (target) {
         URL.revokeObjectURL(target.originalUrl);
         if (target.cutoutUrl) URL.revokeObjectURL(target.cutoutUrl);
+        if (target.stickerUrl) URL.revokeObjectURL(target.stickerUrl);
       }
       return current.filter((item) => item.id !== itemId);
     });
+  };
+
+  const processItemCutouts = async (targetItems: CropDraft[] = items): Promise<CropDraft[]> => {
+    if (!targetItems.length || backgroundBusy) return targetItems;
+
+    setBackgroundBusy(true);
+    setError('');
+    const next = [...targetItems];
+    let failed = 0;
+    try {
+      for (let index = 0; index < next.length; index += 1) {
+        const item = next[index]!;
+        if (item.stickerBlob && item.stickerUrl) {
+          const updated = { ...item, backgroundRemoved: true };
+          next[index] = updated;
+          setRecognitionPhases((current) => ({ ...current, [item.id]: 'ready' }));
+          setItems((current) => current.map((entry) => (entry.id === item.id ? updated : entry)));
+          continue;
+        }
+
+        setRecognitionPhases((current) => ({ ...current, [item.id]: 'isolating' }));
+        const cutoutBlob = item.cutoutBlob || (await removeItemBackground(item.originalBlob));
+        if (!cutoutBlob) {
+          failed += 1;
+          setRecognitionPhases((current) => ({ ...current, [item.id]: 'failed' }));
+          continue;
+        }
+        const cutoutUrl = item.cutoutUrl || makeUrl(cutoutBlob);
+        const cutoutItem: CropDraft = {
+          ...item,
+          cutoutBlob,
+          cutoutUrl,
+          backgroundRemoved: true,
+        };
+        next[index] = cutoutItem;
+        setItems((current) => current.map((entry) => (entry.id === item.id ? cutoutItem : entry)));
+
+        setRecognitionPhases((current) => ({ ...current, [item.id]: 'outlining' }));
+        const stickerBlob = await addWhiteStickerOutline(cutoutBlob);
+        const stickerUrl = makeUrl(stickerBlob);
+        const updated: CropDraft = {
+          ...cutoutItem,
+          stickerBlob,
+          stickerUrl,
+          backgroundRemoved: true,
+        };
+        next[index] = updated;
+        setItems((current) => current.map((entry) => (entry.id === item.id ? updated : entry)));
+        setRecognitionPhases((current) => ({ ...current, [item.id]: 'ready' }));
+      }
+      if (failed) {
+        setError(`有 ${failed} 件物品没有抠出清晰主体，已保留原图。`);
+      }
+      return next;
+    } finally {
+      setBackgroundBusy(false);
+    }
   };
 
   const toggleBackgroundRemoval = async () => {
@@ -328,37 +501,7 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
       setError('');
       return;
     }
-
-    setBackgroundBusy(true);
-    setError('');
-    try {
-      const next: CropDraft[] = [];
-      let failed = 0;
-      for (const item of items) {
-        if (item.cutoutBlob && item.cutoutUrl) {
-          next.push({ ...item, backgroundRemoved: true });
-          continue;
-        }
-        const cutoutBlob = await removeItemBackground(item.originalBlob);
-        if (!cutoutBlob) {
-          failed += 1;
-          next.push(item);
-          continue;
-        }
-        next.push({
-          ...item,
-          cutoutBlob,
-          cutoutUrl: makeUrl(cutoutBlob),
-          backgroundRemoved: true,
-        });
-      }
-      setItems(next);
-      if (failed) {
-        setError(`有 ${failed} 件物品没有抠出清晰主体，已保留原图。`);
-      }
-    } finally {
-      setBackgroundBusy(false);
-    }
+    await processItemCutouts(items);
   };
 
   const confirm = async () => {
@@ -379,7 +522,10 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
         createdAt: Date.now(),
       };
       await storage.put('photos', storedPhoto);
-      const nativeItems: RecognitionTaskNativeItem[] = items.map((item) => ({
+      const preparedItems = items.some((item) => !item.stickerBlob)
+        ? await processItemCutouts(items)
+        : items;
+      const nativeItems: RecognitionTaskNativeItem[] = preparedItems.map((item) => ({
         id: uid(),
         image: itemBlob(item),
         rect: item.rect,
@@ -415,20 +561,37 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
         <div className="px-5 pt-5 pb-4 bg-[#fffdf8]">
           <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-[#e6dccc]" />
           <div className="flex items-start justify-between gap-4">
-            <button onClick={step === 'items' ? () => setStep('boxes') : close} className="h-10 w-10 rounded-full flex items-center justify-center text-ink-600">
+            <button
+              onClick={step === 'items' && canReturnToBoxes ? () => setStep('boxes') : close}
+              className="h-10 w-10 rounded-full flex items-center justify-center text-ink-600"
+            >
               <Glyph name="arrow-left" size={22} />
             </button>
             <div className="flex-1 text-center">
               <div className="font-display text-[22px] text-ink-900">
-                {step === 'boxes' ? '调整物品框' : '发现的物品'}
+                {step === 'boxes'
+                  ? '调整物品框'
+                  : loading || items.length === 0
+                    ? '正在生成贴纸'
+                    : backgroundBusy
+                      ? '正在分离物品'
+                      : '发现的物品'}
               </div>
               <div className="mt-1 text-[13px] text-ink-400">
-                {step === 'boxes' ? '拖动边框调整大小，点击 + 添加新框' : '调整方向或删除误裁物品'}
+                {step === 'boxes'
+                  ? '拖动边框调整大小，点击 + 添加新框'
+                  : loading || items.length === 0
+                    ? '正在本机识别物品并准备抠图'
+                  : backgroundBusy
+                    ? `已处理 ${readyItemCount}/${items.length} 件`
+                    : canReturnToBoxes
+                      ? '调整方向或删除误裁物品'
+                      : '物品已自动抠图描边，可直接提交'}
               </div>
             </div>
             <div className="h-10 min-w-16 rounded-full bg-[#f3f0f4] px-3 flex items-center justify-center gap-1 text-[17px] font-semibold text-ink-800">
               <span className="text-[#f3c85b]">✓</span>
-              {step === 'boxes' ? boxes.length : items.length}
+              {step === 'boxes' ? boxes.length : items.length ? `${readyItemCount}/${items.length}` : '…'}
             </div>
           </div>
         </div>
@@ -457,7 +620,9 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
                     return (
                       <div
                         key={box.id}
-                        className={`absolute border-[3px] border-dashed ${selected ? 'border-[#f6c95f]' : 'border-[#f6c95f]/80'} bg-[#f6c95f]/5`}
+                        className={`native-box-marker absolute border-[3px] border-dashed ${
+                          selected ? 'native-box-marker--selected border-[#f6c95f]' : 'border-[#f6c95f]/80'
+                        } bg-[#f6c95f]/5`}
                         style={{
                           left: `${rect.x * 100}%`,
                           top: `${rect.y * 100}%`,
@@ -531,6 +696,27 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
         {step === 'items' && (
           <div className="px-5 pb-[calc(env(safe-area-inset-bottom)+22px)] pt-2 bg-[#fffdf8]">
             {error && <div className="mb-3 text-center text-[13px] text-amber-700">{error}</div>}
+            <div className="recognition-flow-summary mb-4 rounded-[22px] border border-[#eadfcc] bg-[#fbf5e9] px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[12px] font-semibold uppercase tracking-[0.14em] text-[#b59250]">
+                    物品贴纸
+                  </div>
+                  <div className="mt-1 text-[15px] font-semibold text-ink-900">
+                    {backgroundBusy ? '正在自动抠图描边' : items.length > 0 && readyItemCount === items.length ? '贴纸图已准备好' : '等待生成贴纸图'}
+                  </div>
+                </div>
+                <div className="recognition-orbit" aria-hidden="true">
+                  <span />
+                </div>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/70">
+                <div
+                  className="recognition-progress-bar h-full rounded-full"
+                  style={{ width: `${items.length ? (readyItemCount / items.length) * 100 : 0}%` }}
+                />
+              </div>
+            </div>
             <div className="mb-4 flex items-center gap-3">
               <button
                 onClick={toggleBackgroundRemoval}
@@ -545,36 +731,75 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
                 {backgroundBusy
                   ? '处理中'
                   : items.some((item) => item.backgroundRemoved)
-                    ? '原图'
-                    : '去背景'}
+                    ? '预览原图'
+                    : '显示贴纸'}
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-4 max-h-[52vh] overflow-auto pr-1">
-              {items.map((item, index) => (
-                <div key={item.id} className="relative rounded-[24px] bg-white p-4 shadow-soft">
-                  <div className="aspect-square rounded-[18px] bg-[#fbfaf6] flex items-center justify-center overflow-hidden">
-                    <img src={itemUrl(item)} alt={`物品 ${index + 1}`} className="h-full w-full object-contain" />
-                  </div>
-                  <div className="mt-2 text-center text-[18px] font-display text-[#d7c4ad]">#{index + 1}</div>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => rotateItem(item.id)}
-                      disabled={busy || backgroundBusy}
-                      className="h-10 rounded-xl bg-[#f4f0e8] text-ink-600 inline-flex items-center justify-center gap-1 text-[13px] font-semibold"
-                    >
-                      <Glyph name="arrow-right" size={15} />旋转
-                    </button>
-                    <button
-                      onClick={() => deleteItem(item.id)}
-                      disabled={busy || backgroundBusy}
-                      className="h-10 rounded-xl bg-red-50 text-red-500 inline-flex items-center justify-center gap-1 text-[13px] font-semibold"
-                    >
-                      <Glyph name="trash" size={15} />删除
-                    </button>
-                  </div>
+            {items.length === 0 ? (
+              <div className="h-[42vh] rounded-[24px] bg-[#fbf5e9] border border-[#eadfcc] flex flex-col items-center justify-center text-center text-ink-500">
+                <div className="recognition-orbit mb-4" aria-hidden="true">
+                  <span />
                 </div>
-              ))}
-            </div>
+                <div className="text-[15px] font-semibold text-ink-700">正在生成物品贴纸</div>
+                <div className="mt-1 text-[12px]">识别到的物品会直接出现在这里</div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4 max-h-[52vh] overflow-auto pr-1">
+                {items.map((item, index) => {
+                const phase = recognitionPhases[item.id] || (item.stickerBlob ? 'ready' : 'queued');
+                const active = phase === 'isolating' || phase === 'outlining';
+                const hasCutoutPreview = item.backgroundRemoved && Boolean(item.cutoutBlob || item.stickerBlob);
+                return (
+                  <div
+                    key={item.id}
+                    className={`recognition-item-card recognition-item-card--${phase} relative rounded-[24px] bg-white p-4 shadow-soft`}
+                    style={{ '--item-delay': `${index * 90}ms` } as CSSProperties}
+                  >
+                    <div className="recognition-preview-frame aspect-square rounded-[18px] bg-[#fbfaf6] flex items-center justify-center overflow-hidden">
+                      <img
+                        src={itemUrl(item)}
+                        alt={`物品 ${index + 1}`}
+                        className={`recognition-preview-image h-full w-full object-contain ${
+                          hasCutoutPreview ? 'recognition-preview-image--cutout' : ''
+                        } ${
+                          active && !hasCutoutPreview ? 'recognition-preview-image--pending' : ''
+                        }`}
+                      />
+                      {active && <span className="recognition-scan-sweep" aria-hidden="true" />}
+                      {active && <span className="recognition-scan-ring" aria-hidden="true" />}
+                      {phase === 'ready' && (
+                        <span className="recognition-ready-check" aria-hidden="true">
+                          <Glyph name="check" size={15} strokeWidth={2} />
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <div className="text-[18px] font-display text-[#d7c4ad]">#{index + 1}</div>
+                      <div className="rounded-full bg-[#f4f0e8] px-2.5 py-1 text-[11px] font-semibold text-ink-500">
+                        {phaseText(phase)}
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => rotateItem(item.id)}
+                        disabled={busy || backgroundBusy}
+                        className="h-10 rounded-xl bg-[#f4f0e8] text-ink-600 inline-flex items-center justify-center gap-1 text-[13px] font-semibold"
+                      >
+                        <Glyph name="arrow-right" size={15} />旋转
+                      </button>
+                      <button
+                        onClick={() => deleteItem(item.id)}
+                        disabled={busy || backgroundBusy}
+                        className="h-10 rounded-xl bg-red-50 text-red-500 inline-flex items-center justify-center gap-1 text-[13px] font-semibold"
+                      >
+                        <Glyph name="trash" size={15} />删除
+                      </button>
+                    </div>
+                  </div>
+                );
+                })}
+              </div>
+            )}
             <button
               onClick={confirm}
               disabled={busy || backgroundBusy || items.length === 0}
@@ -583,9 +808,11 @@ export function NativeItemDiscoverySheet({ file, roomId = GLOBAL_ROOM_ID, onClos
               <span className="text-white">✦</span>
               {busy ? '提交中…' : `让 AI 识别资料（${items.length}）`}
             </button>
-            <button onClick={() => setStep('boxes')} disabled={busy || backgroundBusy} className="mt-4 w-full text-center text-[16px] font-semibold text-ink-400">
-              返回调整物品框
-            </button>
+            {canReturnToBoxes && (
+              <button onClick={() => setStep('boxes')} disabled={busy || backgroundBusy} className="mt-4 w-full text-center text-[16px] font-semibold text-ink-400">
+                返回调整物品框
+              </button>
+            )}
           </div>
         )}
       </div>

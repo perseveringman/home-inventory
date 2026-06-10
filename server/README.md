@@ -18,6 +18,7 @@
 | GET    | `/healthz`            | 无      | 健康检查（Caddy/宝塔/probe 用） |
 | GET    | `/api/ai/status`      | Bearer  | 各 provider 是否配置好 |
 | POST   | `/api/ai/minimax`     | Bearer  | MiniMax M3（OpenAI 兼容协议）转发 |
+| POST   | `/api/ai/doubao`      | Bearer  | 火山方舟 / Doubao Seed（OpenAI 兼容协议）转发 |
 | POST   | `/api/ai/openrouter`  | Bearer  | OpenRouter（OpenAI 兼容协议）转发 |
 | POST   | `/api/ai/deepseek`    | Bearer  | DeepSeek 转发 |
 | POST   | `/api/ai/claude`      | Bearer  | Anthropic Messages API 转发 |

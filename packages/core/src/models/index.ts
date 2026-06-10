@@ -93,6 +93,12 @@ export interface RecognitionTask {
     cabinets: number;
     items: number;
   };
+  recognitionProfile?: string;
+  recognitionProvider?: string;
+  recognitionModel?: string;
+  recognitionServiceTier?: string;
+  recognitionActualServiceTier?: string;
+  recognitionElapsedMs?: number;
   nativeItems?: RecognitionTaskNativeItem[];
   errorMessage?: string;
 }

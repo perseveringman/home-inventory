@@ -17,6 +17,8 @@ import RoomDialog from '../modals/RoomDialog';
 import { PinIcon } from '../../components/PinIcon';
 import { Glyph } from '../../components/Glyph';
 import { pickImage } from '../../lib/nativeImage';
+import { captureNativeItemsIntoInbox } from '../../lib/nativeItemCapture';
+import { canUseNativeVision } from '../../lib/nativeVision';
 
 export default function RoomDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -91,12 +93,23 @@ export default function RoomDetailPage() {
   const triggerPick = async (source: 'camera' | 'gallery') => {
     if (busy) return;
     try {
+      if (source === 'camera' && canUseNativeVision()) {
+        setBusy(true);
+        const result = await captureNativeItemsIntoInbox(id);
+        if (!result) return;
+        await reloadAll();
+        toast(`已放入收集箱 ${result.items.length} 件`, 3000);
+        navigate('/inbox');
+        return;
+      }
       const file = await pickImage({ source });
       if (!file) return;
       await onFile(file, source);
     } catch (err: any) {
       console.error(err);
       toast('打开相机失败：' + (err?.message || 'unknown'), 3000);
+    } finally {
+      if (source === 'camera' && canUseNativeVision()) setBusy(false);
     }
   };
 

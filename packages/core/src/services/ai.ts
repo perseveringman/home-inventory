@@ -7,10 +7,79 @@ import { apiAuthHeaders, apiUrl, getUserApiKey } from './apiBase';
 
 const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
 const MINIMAX_API = 'https://api.minimaxi.com/v1/chat/completions';
+const DOUBAO_API = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
 const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_MINIMAX_MODEL = 'MiniMax-M3';
+export const DEFAULT_DOUBAO_SEED_20_LITE_MODEL = 'doubao-seed-2-0-lite-260215';
+export const DEFAULT_DOUBAO_SEED_16_LITE_MODEL = 'doubao-seed-1-6-lite-251015';
 const DEFAULT_DETECTION_REPAIR_ROUNDS = 2;
 const MAX_DETECTION_REPAIR_ROUNDS = 3;
+
+export const RECOGNITION_MODEL_PROFILES = [
+  {
+    id: 'auto',
+    label: '自动（现有顺序）',
+    shortLabel: 'Auto',
+    provider: 'auto',
+    model: '',
+    hint: 'MiniMax → OpenRouter/Gemini → Claude → 本地占位',
+  },
+  {
+    id: 'minimax',
+    label: 'MiniMax M3',
+    shortLabel: 'MiniMax M3',
+    provider: 'minimax',
+    model: DEFAULT_MINIMAX_MODEL,
+    hint: '当前默认视觉识别模型',
+  },
+  {
+    id: 'doubao-seed-2.0-lite-default',
+    label: 'Doubao-Seed-2.0-lite（常规）',
+    shortLabel: 'Doubao 2.0 Lite',
+    provider: 'doubao',
+    model: DEFAULT_DOUBAO_SEED_20_LITE_MODEL,
+    serviceTier: 'default',
+    hint: '火山方舟常规在线推理',
+  },
+  {
+    id: 'doubao-seed-2.0-lite-fast',
+    label: 'Doubao-Seed-2.0-lite（低延迟）',
+    shortLabel: 'Doubao 2.0 Lite Fast',
+    provider: 'doubao',
+    model: DEFAULT_DOUBAO_SEED_20_LITE_MODEL,
+    serviceTier: 'fast',
+    hint: '请求体追加 service_tier=fast',
+  },
+  {
+    id: 'doubao-seed-1.6-lite',
+    label: 'doubao-seed-1.6-lite',
+    shortLabel: 'Doubao 1.6 Lite',
+    provider: 'doubao',
+    model: DEFAULT_DOUBAO_SEED_16_LITE_MODEL,
+    serviceTier: 'default',
+    hint: '轻量模型测速',
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter / Gemini',
+    shortLabel: 'Gemini',
+    provider: 'openrouter',
+    model: 'google/gemini-2.5-flash',
+    hint: '历史兼容视觉识别备选',
+  },
+] as const;
+
+export type RecognitionModelProfile = (typeof RECOGNITION_MODEL_PROFILES)[number]['id'];
+export type RecognitionProviderName =
+  (typeof RECOGNITION_MODEL_PROFILES)[number]['provider'] | 'claude' | 'local';
+export type RecognitionServiceTier = 'default' | 'fast' | 'auto';
+
+export function getRecognitionModelProfile(profile?: string) {
+  return (
+    RECOGNITION_MODEL_PROFILES.find((item) => item.id === profile) ||
+    RECOGNITION_MODEL_PROFILES[0]
+  );
+}
 
 const CABINET_DETECT_PROMPT = `你是一个严谨的家居收纳视觉识别助手。请基于照片同时完成两类识别：储物单元 cabinets 和可见物品 items。
 
@@ -83,9 +152,19 @@ export interface DetectedBox {
   reason?: string;
 }
 
+export interface DetectionMeta {
+  provider: RecognitionProviderName;
+  profile: RecognitionModelProfile | 'auto-fallback';
+  label: string;
+  model?: string;
+  requestedServiceTier?: RecognitionServiceTier;
+  actualServiceTier?: string;
+}
+
 export interface DetectionResult {
   cabinets: DetectedBox[];
   items: DetectedBox[];
+  meta?: DetectionMeta;
 }
 
 function clampRect(r: any): DetectedBox['rect'] {
@@ -239,6 +318,10 @@ function imageDataUrl(blob: Blob, base64: string): string {
   return `data:${blob.type || 'image/jpeg'};base64,${base64}`;
 }
 
+function withDetectionMeta(result: DetectionResult, meta: DetectionMeta): DetectionResult {
+  return { ...result, meta };
+}
+
 /* ---------- MiniMax M3 Vision ---------- */
 
 async function callMiniMax(
@@ -247,14 +330,11 @@ async function callMiniMax(
   messages: any[]
 ): Promise<string> {
   const effectiveKey = apiKey || getUserApiKey('minimax') || undefined;
-  if (!effectiveKey) {
-    throw new Error('MiniMax 官方 API Key 未配置，跳过 MiniMax 直连');
-  }
-  const res = await fetch(MINIMAX_API, {
+  const res = await fetch(effectiveKey ? MINIMAX_API : apiUrl('/api/ai/minimax'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${effectiveKey}`,
+      ...(effectiveKey ? { Authorization: `Bearer ${effectiveKey}` } : apiAuthHeaders()),
     },
     body: JSON.stringify({
       model,
@@ -295,11 +375,112 @@ async function detectWithMiniMax(
       ],
     },
   ];
-  return parseDetectionWithRepair({
+  const result = await parseDetectionWithRepair({
     provider: 'MiniMax',
     initialMessages,
     callModel: (messages) => callMiniMax(apiKey, model, messages),
     maxRepairRounds,
+  });
+  return withDetectionMeta(result, {
+    provider: 'minimax',
+    profile: 'minimax',
+    label: 'MiniMax M3',
+    model,
+  });
+}
+
+/* ---------- Doubao / Volcengine Ark Vision ---------- */
+
+interface DoubaoCompletion {
+  text: string;
+  model?: string;
+  actualServiceTier?: string;
+}
+
+async function callDoubao(
+  apiKey: string | undefined,
+  model: string,
+  serviceTier: RecognitionServiceTier | undefined,
+  messages: any[]
+): Promise<DoubaoCompletion> {
+  const effectiveKey = apiKey || getUserApiKey('doubao') || undefined;
+  const res = await fetch(effectiveKey ? DOUBAO_API : apiUrl('/api/ai/doubao'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(effectiveKey ? { Authorization: `Bearer ${effectiveKey}` } : apiAuthHeaders()),
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: 4096,
+      temperature: 0.2,
+      ...(serviceTier ? { service_tier: serviceTier } : {}),
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Doubao API (${res.status}): ${err.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  if (data.error) {
+    throw new Error(typeof data.error === 'string' ? data.error : data.error.message || 'Doubao 返回错误');
+  }
+  return {
+    text: data.choices?.[0]?.message?.content || data.raw || '',
+    model: data.model,
+    actualServiceTier: data.service_tier,
+  };
+}
+
+async function detectWithDoubao(
+  profile: RecognitionModelProfile,
+  apiKey: string | undefined,
+  blob: Blob,
+  maxRepairRounds: number
+): Promise<DetectionResult> {
+  const profileMeta = getRecognitionModelProfile(profile);
+  if (profileMeta.provider !== 'doubao') {
+    throw new Error(`识别 profile 不是 Doubao：${profile}`);
+  }
+  const base64 = await fileToBase64(blob);
+  const initialMessages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: CABINET_DETECT_PROMPT },
+        {
+          type: 'image_url',
+          image_url: { url: imageDataUrl(blob, base64) },
+        },
+      ],
+    },
+  ];
+  let actualModel: string | undefined;
+  let actualServiceTier: string | undefined;
+  const result = await parseDetectionWithRepair({
+    provider: profileMeta.label,
+    initialMessages,
+    callModel: async (messages) => {
+      const completion = await callDoubao(
+        apiKey,
+        profileMeta.model,
+        profileMeta.serviceTier as RecognitionServiceTier | undefined,
+        messages
+      );
+      actualModel = completion.model || actualModel;
+      actualServiceTier = completion.actualServiceTier || actualServiceTier;
+      return completion.text;
+    },
+    maxRepairRounds,
+  });
+  return withDetectionMeta(result, {
+    provider: 'doubao',
+    profile,
+    label: profileMeta.label,
+    model: actualModel || profileMeta.model,
+    requestedServiceTier: profileMeta.serviceTier as RecognitionServiceTier | undefined,
+    actualServiceTier,
   });
 }
 
@@ -347,11 +528,17 @@ async function detectWithGemini(
       ],
     },
   ];
-  return parseDetectionWithRepair({
+  const result = await parseDetectionWithRepair({
     provider: 'Gemini',
     initialMessages,
     callModel: (messages) => callOpenRouter(apiKey, model, messages),
     maxRepairRounds,
+  });
+  return withDetectionMeta(result, {
+    provider: 'openrouter',
+    profile: 'openrouter',
+    label: 'OpenRouter / Gemini',
+    model,
   });
 }
 
@@ -393,11 +580,17 @@ async function detectWithClaude(
       ],
     },
   ];
-  return parseDetectionWithRepair({
+  const result = await parseDetectionWithRepair({
     provider: 'Claude',
     initialMessages,
     callModel: (messages) => callClaude(apiKey, messages),
     maxRepairRounds,
+  });
+  return withDetectionMeta(result, {
+    provider: 'claude',
+    profile: 'auto-fallback',
+    label: 'Claude Vision',
+    model: 'claude-sonnet-4-20250514',
   });
 }
 
@@ -443,14 +636,24 @@ function heuristicDetection(size: { width: number; height: number }): DetectionR
     cabinets.push({ name: '柜子 1', rect: { x: 0.1, y: 0.2, w: 0.8, h: 0.35 } });
     cabinets.push({ name: '柜子 2', rect: { x: 0.12, y: 0.58, w: 0.76, h: 0.35 } });
   }
-  return { cabinets, items: [] };
+  return {
+    cabinets,
+    items: [],
+    meta: {
+      provider: 'local',
+      profile: 'auto-fallback',
+      label: '本地占位',
+    },
+  };
 }
 
 /* ---------- 总入口 ---------- */
 
 export interface DetectConfig {
+  recognitionModelProfile?: RecognitionModelProfile | string;
   minimaxKey?: string;
   minimaxModel?: string;
+  doubaoKey?: string;
   openrouterKey?: string;
   openrouterModel?: string;
   claudeKey?: string;
@@ -463,6 +666,34 @@ export async function detectCabinetsAndItems(
   cfg: DetectConfig
 ): Promise<DetectionResult> {
   const maxRepairRounds = normalizeRepairRounds(cfg.maxRepairRounds);
+  const profile = getRecognitionModelProfile(cfg.recognitionModelProfile);
+
+  if (profile.id !== 'auto') {
+    try {
+      if (profile.provider === 'minimax') {
+        return await detectWithMiniMax(
+          cfg.minimaxKey,
+          cfg.minimaxModel || DEFAULT_MINIMAX_MODEL,
+          blob,
+          maxRepairRounds
+        );
+      }
+      if (profile.provider === 'doubao') {
+        return await detectWithDoubao(profile.id, cfg.doubaoKey, blob, maxRepairRounds);
+      }
+      if (profile.provider === 'openrouter') {
+        return await detectWithGemini(
+          cfg.openrouterKey,
+          cfg.openrouterModel || profile.model,
+          blob,
+          maxRepairRounds
+        );
+      }
+    } catch (err) {
+      throw err instanceof Error ? err : new Error(`${profile.label} 识别失败`);
+    }
+  }
+
   try {
     return await detectWithMiniMax(
       cfg.minimaxKey,

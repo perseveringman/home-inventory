@@ -13,6 +13,8 @@ import LooseListDialog from '../modals/LooseListDialog';
 import { PinIcon, roomIconName } from '../../components/PinIcon';
 import { Glyph } from '../../components/Glyph';
 import { pickImage } from '../../lib/nativeImage';
+import { captureNativeItemsIntoInbox } from '../../lib/nativeItemCapture';
+import { canUseNativeVision } from '../../lib/nativeVision';
 import { NativeItemDiscoverySheet } from '../../components/NativeItemDiscoverySheet';
 
 export default function RoomsPage() {
@@ -22,6 +24,7 @@ export default function RoomsPage() {
   const items = useStore((s) => s.items);
   const cabinets = useStore((s) => s.cabinets);
   const del = useStore((s) => s.del);
+  const reloadAll = useStore((s) => s.reloadAll);
   const [nativeBusy, setNativeBusy] = useState(false);
   const [nativeFile, setNativeFile] = useState<Blob | null>(null);
 
@@ -59,6 +62,14 @@ export default function RoomsPage() {
     if (nativeBusy) return;
     setNativeBusy(true);
     try {
+      if (canUseNativeVision()) {
+        const result = await captureNativeItemsIntoInbox(GLOBAL_ROOM_ID);
+        if (!result) return;
+        await reloadAll();
+        toast(`已放入收集箱 ${result.items.length} 件`, 3000);
+        navigate('/inbox');
+        return;
+      }
       const file = await pickImage({ source: 'prompt' });
       if (!file) return;
       setNativeFile(file);
